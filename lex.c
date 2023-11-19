@@ -162,10 +162,13 @@ static TokenType scan_token(Lexer *lexer, const char *source) {
 
 static void skip_whitespace(Lexer *lexer, const char *source) {
   while (is_whitespace(lexer->ch)) {
+    lexer->col += 1;
+
     if (lexer->ch == '\n') {
       lexer->line += 1;
       lexer->col = 1;
     }
+
     read_char(lexer, source);
   }
 }
@@ -192,6 +195,7 @@ static int get_current_col(Token token) {
 static void add_token(Lexer *lexer, Token token) {
   lexer->tokens =
       (Token *)realloc(lexer->tokens, sizeof(Token) * ++lexer->size);
+
   if (lexer->tokens == NULL)
     return;
 
