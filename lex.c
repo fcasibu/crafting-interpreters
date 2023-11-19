@@ -10,6 +10,8 @@ static char peek(Lexer *lexer, const char *source);
 static int get_current_col(Token token);
 static void read_char(Lexer *lexer, const char *source);
 static void read_line(Lexer *lexer, const char *source);
+static void read_string(Lexer *lexer, const char *source);
+static void *get_literal(TokenType type, void *value);
 static bool match(Lexer *lexer, const char *source, char c);
 static bool is_at_end(Lexer *lex, const char *source);
 static bool is_whitespace(const char ch);
@@ -79,21 +81,53 @@ static void read_line(Lexer *lexer, const char *source) {
   int start = lexer->cursor - 1;
   TokenType type = scan_token(lexer, source);
 
-  int bytes_to_copy = lexer->cursor - start - 1;
+  size_t bytes_to_copy = lexer->cursor - start - 1;
   char *text = (char *)malloc(sizeof(char) * bytes_to_copy + 1);
 
   if (text == NULL) {
-    error(lexer->file_name, lexer->line, lexer->col,
-          "Something went wrong with malloc");
+    warning(lexer->file_name, lexer->line, lexer->col, "Allocation failed");
     return;
   }
 
   strncpy(text, source + start, bytes_to_copy);
   text[strlen(text)] = '\0';
 
-  Token token = create_token(type, text, NULL, lexer->line, lexer->col);
+  Token token = create_token(type, text, get_literal(type, text), lexer->line,
+                             lexer->col);
   add_token(lexer, token);
   lexer->col += get_current_col(token);
+}
+
+static void read_string(Lexer *lexer, const char *source) {
+  while (peek(lexer, source) != '"' && !is_at_end(lexer, source)) {
+    read_char(lexer, source);
+  }
+
+  if (is_at_end(lexer, source)) {
+    error(lexer->file_name, lexer->line, lexer->col, "Unterminated string");
+    exit(1);
+  }
+
+  read_char(lexer, source);
+}
+
+static void *get_literal(TokenType type, void *value) {
+  switch (type) {
+  case STRING: {
+    char *string_literal =
+        (char *)malloc(sizeof(char) * strlen((char *)value) + 1);
+
+    if (string_literal == NULL)
+      return NULL;
+
+    size_t bytes_to_copy = strlen(value) - 2;
+    strncpy(string_literal, (char *)value + 1, bytes_to_copy);
+    string_literal[strlen(string_literal)] = '\0';
+    return string_literal;
+  }
+  default:
+    return NULL;
+  }
 }
 
 static TokenType scan_token(Lexer *lexer, const char *source) {
@@ -144,18 +178,22 @@ static TokenType scan_token(Lexer *lexer, const char *source) {
     break;
   case '/':
     if (match(lexer, source, '/')) {
-      while (peek(lexer, source) != '\n' && !is_at_end(lexer, source))
+      while (peek(lexer, source) != '\n') {
         read_char(lexer, source);
+      }
       token_type = COMMENT;
     } else {
       token_type = SLASH;
     }
     break;
+  case '"':
+    read_string(lexer, source);
+    token_type = STRING;
+    break;
   default:
     error(lexer->file_name, lexer->line, lexer->col, "Unexpected character: ");
     printf("%c", lexer->ch);
     exit(1);
-    break;
   }
 
   read_char(lexer, source);
