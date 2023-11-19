@@ -204,11 +204,6 @@ static void skip_whitespace(Lexer *lexer, const char *source) {
   while (is_whitespace(lexer->ch)) {
     lexer->col += 1;
 
-    if (lexer->ch == '\n') {
-      lexer->line += 1;
-      lexer->col = 1;
-    }
-
     read_char(lexer, source);
   }
 }
@@ -221,13 +216,18 @@ static char peek(Lexer *lexer, const char *source) {
 }
 
 static void read_char(Lexer *lexer, const char *source) {
+  if (lexer->ch == '\n') {
+    lexer->line += 1;
+    lexer->col = 1;
+  }
+
   lexer->ch = is_at_end(lexer, source) ? '\0' : source[lexer->cursor];
   lexer->cursor += 1;
 }
 
 static int get_current_col(Token token) {
   if (token.lexeme != NULL)
-    return token.type == COMMENT ? 1 : strlen(token.lexeme);
+    return strlen(token.lexeme);
 
   return 0;
 }
