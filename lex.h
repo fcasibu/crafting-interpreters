@@ -1,8 +1,6 @@
 #ifndef _LEX_H_
 #define _LEX_H_
 
-#include "lox.h"
-
 // clang-format off
 typedef enum {
   // single character tokens
@@ -17,7 +15,7 @@ typedef enum {
   IDENT, STRING, NUMBER,
 
   // Keywords
-  AND, CLASS, ÉLSE, FALSE, FUN, FOR, IF,
+  AND, CLASS, ELSE, FALSE, FUN, FOR, IF,
   NIL, OR, PRINT, RETURN, SUPER, THIS,
   TRUE, VAR, WHILE,
 
@@ -28,7 +26,7 @@ typedef struct {
   int       line;
   int       col;
   char      *lexeme;
-  char      *literal;
+  void      *literal;
   TokenType type;
 } Token;
 
@@ -46,7 +44,7 @@ typedef struct {
 Lexer *init_lexer(const char *source, const char *file_name);
 Lexer *scan_tokens(const char *source, const char *file_name);
 
-void print_token(Token token);
+void print_token(Token token, const char *file_name);
 void free_lexer(Lexer *lexer);
 
 #endif // _LEX_H_

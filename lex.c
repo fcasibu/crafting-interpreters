@@ -1,6 +1,8 @@
 #include "lex.h"
+#include "log.h"
 
 static TokenType scan_token(Lexer *lexer, const char *source);
+static TokenType get_ident_token_type(char *ident);
 static Token create_token(TokenType type, char *lexeme, char *literal, int line,
                           int col);
 static void add_token(Lexer *lexer, Token token);
@@ -11,10 +13,20 @@ static int get_current_col(Token token);
 static void read_char(Lexer *lexer, const char *source);
 static void read_line(Lexer *lexer, const char *source);
 static void read_string(Lexer *lexer, const char *source);
+static void read_number(Lexer *lexer, const char *source);
+static void read_ident(Lexer *lexer, const char *source);
 static void *get_literal(TokenType type, void *value);
+static char *get_text(Lexer *lexer, const char *source, int start,
+                      size_t bytes_to_copy);
 static bool match(Lexer *lexer, const char *source, char c);
+static char *strip_quotes(char *string);
 static bool is_at_end(Lexer *lex, const char *source);
 static bool is_whitespace(const char ch);
+static bool is_digit(const char ch);
+static bool is_alpha(const char ch);
+#if 0
+static bool is_alphanum(const char ch);
+#endif
 static void skip_whitespace(Lexer *lexer, const char *source);
 
 Lexer *scan_tokens(const char *source, const char *file_name) {
@@ -31,12 +43,13 @@ Lexer *scan_tokens(const char *source, const char *file_name) {
   return lex;
 }
 
-void print_token(Token token) {
-  printf("main.lox:%d:%d: Type: %s\n"
-         "               Lexeme: %s\n"
-         "               Literal: %s\n",
-         token.line, token.col, format_token_type(token.type), token.lexeme,
-         token.literal);
+void print_token(Token token, const char *file_name) {
+  printf("%s:%d:%d: \n"
+         "Token: %s\n"
+         "Lexeme: %s\n"
+         "Literal: %s\n",
+         file_name, token.line, token.col, format_token_type(token.type),
+         token.lexeme, (char *)token.literal);
 }
 
 void free_lexer(Lexer *lexer) {
@@ -82,15 +95,11 @@ static void read_line(Lexer *lexer, const char *source) {
   TokenType type = scan_token(lexer, source);
 
   size_t bytes_to_copy = lexer->cursor - start - 1;
-  char *text = (char *)malloc(sizeof(char) * bytes_to_copy + 1);
+  char *text = get_text(lexer, source, start, bytes_to_copy);
 
-  if (text == NULL) {
-    warning(lexer->file_name, lexer->line, lexer->col, "Allocation failed");
-    return;
+  if (type == IDENT) {
+    type = get_ident_token_type(text);
   }
-
-  strncpy(text, source + start, bytes_to_copy);
-  text[strlen(text)] = '\0';
 
   Token token = create_token(type, text, get_literal(type, text), lexer->line,
                              lexer->col);
@@ -99,9 +108,8 @@ static void read_line(Lexer *lexer, const char *source) {
 }
 
 static void read_string(Lexer *lexer, const char *source) {
-  while (peek(lexer, source) != '"' && !is_at_end(lexer, source)) {
+  while (peek(lexer, source) != '"' && !is_at_end(lexer, source))
     read_char(lexer, source);
-  }
 
   if (is_at_end(lexer, source)) {
     error(lexer->file_name, lexer->line, lexer->col, "Unterminated string");
@@ -111,23 +119,51 @@ static void read_string(Lexer *lexer, const char *source) {
   read_char(lexer, source);
 }
 
+static void read_number(Lexer *lexer, const char *source) {
+  while (is_digit(lexer->ch)) {
+    read_char(lexer, source);
+  }
+
+  if (lexer->ch == '.') {
+    read_char(lexer, source);
+
+    while (is_digit(lexer->ch))
+      read_char(lexer, source);
+  }
+}
+
+static void read_ident(Lexer *lexer, const char *source) {
+  while (is_alpha(lexer->ch)) {
+    read_char(lexer, source);
+  }
+}
+
 static void *get_literal(TokenType type, void *value) {
   switch (type) {
   case STRING: {
-    char *string_literal =
-        (char *)malloc(sizeof(char) * strlen((char *)value) + 1);
-
-    if (string_literal == NULL)
-      return NULL;
-
-    size_t bytes_to_copy = strlen(value) - 2;
-    strncpy(string_literal, (char *)value + 1, bytes_to_copy);
-    string_literal[strlen(string_literal)] = '\0';
-    return string_literal;
+    return strip_quotes(value);
   }
-  default:
+  case NUMBER: {
+    return value;
+  }
+  default: {
     return NULL;
   }
+  }
+}
+static char *get_text(Lexer *lexer, const char *source, int start,
+                      size_t bytes_to_copy) {
+  char *text = (char *)malloc(sizeof(char) * bytes_to_copy + 1);
+
+  if (text == NULL) {
+    warning(lexer->file_name, lexer->line, lexer->col, "Allocation failed");
+    return NULL;
+  }
+
+  strncpy(text, source + start, bytes_to_copy);
+  text[strlen(text)] = '\0';
+
+  return text;
 }
 
 static TokenType scan_token(Lexer *lexer, const char *source) {
@@ -191,6 +227,16 @@ static TokenType scan_token(Lexer *lexer, const char *source) {
     token_type = STRING;
     break;
   default:
+    if (is_digit(lexer->ch)) {
+      read_number(lexer, source);
+      token_type = NUMBER;
+      return token_type;
+    } else if (is_alpha(lexer->ch)) {
+      read_ident(lexer, source);
+      token_type = IDENT;
+      return token_type;
+    }
+
     error(lexer->file_name, lexer->line, lexer->col, "Unexpected character: ");
     printf("%c", lexer->ch);
     exit(1);
@@ -198,6 +244,44 @@ static TokenType scan_token(Lexer *lexer, const char *source) {
 
   read_char(lexer, source);
   return token_type;
+}
+
+static TokenType get_ident_token_type(char *ident) {
+  // TODO: use hashmap
+  if (strcmp(ident, "and") == 0)
+    return AND;
+  if (strcmp(ident, "class") == 0)
+    return CLASS;
+  if (strcmp(ident, "else") == 0)
+    return ELSE;
+  if (strcmp(ident, "false") == 0)
+    return FALSE;
+  if (strcmp(ident, "fun") == 0)
+    return FUN;
+  if (strcmp(ident, "for") == 0)
+    return FOR;
+  if (strcmp(ident, "if") == 0)
+    return IF;
+  if (strcmp(ident, "nil") == 0)
+    return NIL;
+  if (strcmp(ident, "or") == 0)
+    return OR;
+  if (strcmp(ident, "print") == 0)
+    return PRINT;
+  if (strcmp(ident, "return") == 0)
+    return RETURN;
+  if (strcmp(ident, "super") == 0)
+    return SUPER;
+  if (strcmp(ident, "this") == 0)
+    return THIS;
+  if (strcmp(ident, "true") == 0)
+    return TRUE;
+  if (strcmp(ident, "var") == 0)
+    return VAR;
+  if (strcmp(ident, "while") == 0)
+    return WHILE;
+
+  return IDENT;
 }
 
 static void skip_whitespace(Lexer *lexer, const char *source) {
@@ -248,6 +332,18 @@ static bool match(Lexer *lexer, const char *source, char c) {
 
   lexer->cursor += 1;
   return true;
+}
+
+static char *strip_quotes(char *string) {
+  char *result = (char *)malloc(sizeof(char) * strlen((char *)string) + 1);
+
+  if (result == NULL)
+    return NULL;
+
+  size_t bytes_to_copy = strlen(string) - 2;
+  strncpy(result, (char *)string + 1, bytes_to_copy);
+  result[strlen(result)] = '\0';
+  return result;
 }
 
 static Token create_token(TokenType type, char *lexeme, char *literal, int line,
@@ -318,8 +414,8 @@ static const char *format_token_type(TokenType token_type) {
     return "AND";
   case CLASS:
     return "CLASS";
-  case ÉLSE:
-    return "ÉLSE";
+  case ELSE:
+    return "ELSE";
   case FALSE:
     return "FALSE";
   case FUN:
@@ -353,9 +449,18 @@ static const char *format_token_type(TokenType token_type) {
 }
 
 static bool is_at_end(Lexer *lex, const char *source) {
-  return source[lex->cursor] == '\0' || lex->cursor - 1 >= (int)strlen(source);
+  return lex->cursor >= (int)strlen(source);
 }
 
 static bool is_whitespace(const char ch) {
   return ch == ' ' || ch == '\r' || ch == '\t' || ch == '\n';
 }
+static bool is_digit(const char ch) { return ch >= '0' && ch <= '9'; }
+
+static bool is_alpha(const char ch) {
+  return ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) || ch == '_';
+}
+
+#if 0
+static bool is_alphanum(const char ch) { return is_alpha(ch) || is_digit(ch); }
+#endif

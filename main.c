@@ -7,14 +7,15 @@
 
 #define BUFFER_SIZE 1024
 
-char *read_file(const char *path);
+char *read_file(char *path);
 void run_prompt();
-void run(const char *source, const char *file_name);
+void run(const char *source, char *file_name);
 
-int main(void) {
-  const char *file_name = "main.lox";
+int main(int argc, char **argv) {
+  char *file_name = argv[1];
   char *file = read_file(file_name);
   run(file, file_name);
+  free(file);
   // run("(){},.-+;/*=\n"
   //     "!!===>>=<<=\n"
   //     "// This is a comment");
@@ -34,7 +35,7 @@ void run_prompt() {
   }
 }
 
-char *read_file(const char *path) {
+char *read_file(char *path) {
   FILE *ptr;
 
   if ((ptr = fopen(path, "r")) == NULL) {
@@ -55,11 +56,11 @@ char *read_file(const char *path) {
   return buffer;
 }
 
-void run(const char *source, const char *file_name) {
+void run(const char *source, char *file_name) {
   Lexer *lexer = scan_tokens(source, file_name);
 
   for (int i = 0; i < lexer->size; ++i) {
-    print_token(lexer->tokens[i]);
+    print_token(lexer->tokens[i], file_name);
   }
 
   free_lexer(lexer);

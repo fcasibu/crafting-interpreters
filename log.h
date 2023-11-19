@@ -1,5 +1,5 @@
-#ifndef _LOX_H_
-#define _LOX_H_
+#ifndef _LOG_H_
+#define _LOG_H_
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -11,4 +11,4 @@ void warning(const char *file_name, int line, int col, const char *message);
 void report(const char *file_name, int line, int col, const char *where,
             const char *message, const char *message_type);
 
-#endif //_LOX_H_
+#endif //_LOG_H_
