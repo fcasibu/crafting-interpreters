@@ -9,11 +9,12 @@
 
 char *read_file(const char *path);
 void run_prompt();
-void run(const char *source);
+void run(const char *source, const char *file_name);
 
 int main(void) {
-  char *file = read_file("./main.lox");
-  run(file);
+  const char *file_name = "main.lox";
+  char *file = read_file(file_name);
+  run(file, file_name);
   // run("(){},.-+;/*=\n"
   //     "!!===>>=<<=\n"
   //     "// This is a comment");
@@ -28,7 +29,7 @@ void run_prompt() {
     scanf("%s", line);
 
     printf("Line: %s\n", line);
-    run(line);
+    run(line, "");
     free(line);
   }
 }
@@ -54,8 +55,8 @@ char *read_file(const char *path) {
   return buffer;
 }
 
-void run(const char *source) {
-  Lexer *lexer = scan_tokens(source);
+void run(const char *source, const char *file_name) {
+  Lexer *lexer = scan_tokens(source, file_name);
 
   for (int i = 0; i < lexer->size; ++i) {
     print_token(lexer->tokens[i]);

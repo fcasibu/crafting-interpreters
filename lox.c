@@ -1,6 +1,9 @@
 #include "lox.h"
 
-void error(int line, const char *message) { report(line, "", message); }
-void report(int line, const char *where, const char *message) {
-  printf("[line %d] Error%s: %s\n", line, where, message);
+void error(const char *file_name, int line, int col, const char *message) {
+  report(file_name, line, col, "", message);
+}
+void report(const char *file_name, int line, int col, const char *where,
+            const char *message) {
+  printf("%s:%d:%d: Error%s: %s\n", file_name, line, col, where, message);
 }

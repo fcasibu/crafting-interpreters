@@ -15,8 +15,8 @@ static bool is_at_end(Lexer *lex, const char *source);
 static bool is_whitespace(const char ch);
 static void skip_whitespace(Lexer *lexer, const char *source);
 
-Lexer *scan_tokens(const char *source) {
-  Lexer *lex = init_lexer(source);
+Lexer *scan_tokens(const char *source, const char *file_name) {
+  Lexer *lex = init_lexer(source, file_name);
   if (lex == NULL)
     return lex;
 
@@ -31,8 +31,8 @@ Lexer *scan_tokens(const char *source) {
 
 void print_token(Token token) {
   printf("main.lox:%d:%d: Type: %s\n"
-         "            Lexeme: %s\n"
-         "            Literal: %s\n",
+         "               Lexeme: %s\n"
+         "               Literal: %s\n",
          token.line, token.col, format_token_type(token.type), token.lexeme,
          token.literal);
 }
@@ -56,13 +56,14 @@ void free_lexer(Lexer *lexer) {
   free(lexer);
 }
 
-Lexer *init_lexer(const char *source) {
+Lexer *init_lexer(const char *source, const char *file_name) {
   Lexer *lexer = (Lexer *)malloc(sizeof(Lexer));
-  lexer->size = 0;
   lexer->tokens = (Token *)malloc(sizeof(Token) * lexer->size);
+  lexer->size = 0;
   lexer->cursor = 0;
   lexer->line = 1;
   lexer->col = 1;
+  lexer->file_name = file_name;
 
   if (lexer->tokens == NULL)
     return NULL;
@@ -79,17 +80,18 @@ static void read_line(Lexer *lexer, const char *source) {
   TokenType type = scan_token(lexer, source);
 
   int bytes_to_copy = lexer->cursor - start - 1;
-  char *text = (char *)malloc(sizeof(char *) * bytes_to_copy + 1);
+  char *text = (char *)malloc(sizeof(char) * bytes_to_copy + 1);
 
   if (text == NULL) {
-    error(lexer->line, "Something went wrong with malloc");
+    error(lexer->file_name, lexer->line, lexer->col,
+          "Something went wrong with malloc");
     return;
   }
 
   strncpy(text, source + start, bytes_to_copy);
   text[strlen(text)] = '\0';
 
-  const Token token = create_token(type, text, NULL, lexer->line, lexer->col);
+  Token token = create_token(type, text, NULL, lexer->line, lexer->col);
   add_token(lexer, token);
   lexer->col += get_current_col(token);
 }
@@ -150,7 +152,7 @@ static TokenType scan_token(Lexer *lexer, const char *source) {
     }
     break;
   default:
-    error(lexer->line, "Unexpected character: ");
+    error(lexer->file_name, lexer->line, lexer->col, "Unexpected character: ");
     printf("%c", lexer->ch);
     exit(1);
     break;

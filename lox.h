@@ -6,7 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-void error(int line, const char *message);
-void report(int line, const char *where, const char *message);
+void error(const char *file_name, int line, int col, const char *message);
+void report(const char *file_name, int line, int col, const char *where,
+            const char *message);
 
 #endif //_LOX_H_
