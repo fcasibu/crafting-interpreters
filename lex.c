@@ -9,6 +9,7 @@ static void add_token(Lexer *lexer, Token token);
 
 static const char *format_token_type(TokenType token_type);
 static char peek(Lexer *lexer, const char *source);
+static char peek_next(Lexer *lexer, const char *source);
 static int get_current_col(Token token);
 static void read_char(Lexer *lexer, const char *source);
 static void read_line(Lexer *lexer, const char *source);
@@ -92,6 +93,7 @@ static void read_line(Lexer *lexer, const char *source) {
   skip_whitespace(lexer, source);
 
   int start = lexer->cursor - 1;
+  int lines = lexer->line;
   TokenType type = scan_token(lexer, source);
 
   size_t bytes_to_copy = lexer->cursor - start - 1;
@@ -101,18 +103,19 @@ static void read_line(Lexer *lexer, const char *source) {
     type = get_ident_token_type(text);
   }
 
-  Token token = create_token(type, text, get_literal(type, text), lexer->line,
-                             lexer->col);
+  Token token =
+      create_token(type, text, get_literal(type, text), lines, lexer->col);
   add_token(lexer, token);
   lexer->col += get_current_col(token);
 }
 
 static void read_string(Lexer *lexer, const char *source) {
+  int start_line = lexer->line;
   while (peek(lexer, source) != '"' && !is_at_end(lexer, source))
     read_char(lexer, source);
 
   if (is_at_end(lexer, source)) {
-    error(lexer->file_name, lexer->line, lexer->col, "Unterminated string");
+    error(lexer->file_name, start_line, lexer->col, "Unterminated string");
     exit(1);
   }
 
@@ -218,6 +221,22 @@ static TokenType scan_token(Lexer *lexer, const char *source) {
         read_char(lexer, source);
       }
       token_type = COMMENT;
+    } else if (match(lexer, source, '*')) {
+      int start_line = lexer->line;
+      while (peek_next(lexer, source) != '/' && !is_at_end(lexer, source)) {
+        read_char(lexer, source);
+      }
+
+      if (peek(lexer, source) != '*' || peek_next(lexer, source) != '/') {
+        error(lexer->file_name, start_line, lexer->col,
+              "Unterminated comment block");
+        exit(1);
+      }
+
+      read_char(lexer, source);
+      read_char(lexer, source);
+
+      token_type = COMMENT;
     } else {
       token_type = SLASH;
     }
@@ -299,6 +318,13 @@ static char peek(Lexer *lexer, const char *source) {
   return source[lexer->cursor];
 }
 
+static char peek_next(Lexer *lexer, const char *source) {
+  if (is_at_end(lexer, source))
+    return '\0';
+
+  return source[lexer->cursor + 1];
+}
+
 static void read_char(Lexer *lexer, const char *source) {
   if (lexer->ch == '\n') {
     lexer->line += 1;
@@ -330,7 +356,7 @@ static bool match(Lexer *lexer, const char *source, char c) {
   if (is_at_end(lexer, source) || peek(lexer, source) != c)
     return false;
 
-  lexer->cursor += 1;
+  read_char(lexer, source);
   return true;
 }
 

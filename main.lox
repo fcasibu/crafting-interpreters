@@ -1,12 +1,22 @@
 // This is a comment
+
 (( )){} // grouping stuff
+
 !*+-/=<> <= == >= // operators
+
 "Hello, World!" // This is a string
+
 1234 // This is a number
+
 3.14 // With decimal
 
 fun hello_world() {
   var string = "Hello, World!";
   return string;
 }
+
 hello_world();
+
+/* Comment Block
+ * Multiline
+ */
