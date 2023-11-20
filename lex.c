@@ -1,8 +1,11 @@
-#include "lex.h"
-#include "log.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "lex.h"
+#include "log.h"
+#include "utils.h"
 
 static TokenType scan_token(Lexer *lexer, const char *source);
 static TokenType get_ident_token_type(char *ident);
@@ -17,17 +20,10 @@ static void read_string(Lexer *lexer, const char *source);
 static void read_number(Lexer *lexer, const char *source);
 static void read_ident(Lexer *lexer, const char *source);
 static void *get_literal(TokenType type, void *value);
-static char *get_text(Lexer *lexer, const char *source, int start,
-                      size_t bytes_to_copy);
+static char *get_text(const char *source, int start, size_t bytes_to_copy);
 static bool match(Lexer *lexer, const char *source, char c);
 static char *strip_quotes(char *string);
 static bool is_at_end(Lexer *lex, const char *source);
-static bool is_whitespace(const char ch);
-static bool is_digit(const char ch);
-static bool is_alpha(const char ch);
-#if 0
-static bool is_alphanum(const char ch);
-#endif
 static void skip_whitespace(Lexer *lexer, const char *source);
 
 Lexer *scan_tokens(const char *source, const char *file_name) {
@@ -48,8 +44,10 @@ void free_lexer(Lexer *lexer) {
   if (lexer == NULL)
     return;
 
-  if (lexer->tokens == NULL)
+  if (lexer->tokens == NULL) {
+    free(lexer);
     return;
+  }
 
   for (int i = 0; i < lexer->size; ++i) {
     if (lexer->tokens[i].lexeme != NULL) {
@@ -65,15 +63,20 @@ void free_lexer(Lexer *lexer) {
 
 Lexer *init_lexer(const char *source, const char *file_name) {
   Lexer *lexer = (Lexer *)malloc(sizeof(Lexer));
+
+  if (lexer == NULL)
+    return NULL;
+
   lexer->tokens = (Token *)malloc(sizeof(Token) * lexer->size);
+
+  if (lexer->tokens == NULL)
+    return NULL;
+
   lexer->size = 0;
   lexer->cursor = 0;
   lexer->line = 1;
   lexer->col = 1;
   lexer->file_name = file_name;
-
-  if (lexer->tokens == NULL)
-    return NULL;
 
   read_char(lexer, source);
 
@@ -88,7 +91,10 @@ static void read_line(Lexer *lexer, const char *source) {
   TokenType type = scan_token(lexer, source);
 
   size_t bytes_to_copy = lexer->cursor - start - 1;
-  char *text = get_text(lexer, source, start, bytes_to_copy);
+  char *text = get_text(source, start, bytes_to_copy);
+
+  if (text == NULL)
+    return;
 
   if (type == IDENT) {
     type = get_ident_token_type(text);
@@ -135,7 +141,11 @@ static void read_ident(Lexer *lexer, const char *source) {
 static void *get_literal(TokenType type, void *value) {
   switch (type) {
   case STRING: {
-    return strip_quotes(value);
+    char *stripped_value = strip_quotes(value);
+    if (stripped_value == NULL)
+      return value;
+
+    return stripped_value;
   }
   case NUMBER: {
     return value;
@@ -145,12 +155,10 @@ static void *get_literal(TokenType type, void *value) {
   }
   }
 }
-static char *get_text(Lexer *lexer, const char *source, int start,
-                      size_t bytes_to_copy) {
+static char *get_text(const char *source, int start, size_t bytes_to_copy) {
   char *text = (char *)malloc(sizeof(char) * bytes_to_copy + 1);
 
   if (text == NULL) {
-    warning(lexer->file_name, lexer->line, lexer->col, "Allocation failed");
     return NULL;
   }
 
@@ -352,7 +360,7 @@ static bool match(Lexer *lexer, const char *source, char c) {
 }
 
 static char *strip_quotes(char *string) {
-  char *result = (char *)malloc(sizeof(char) * strlen((char *)string) + 1);
+  char *result = (char *)malloc(sizeof(char) * strlen(string) + 1);
 
   if (result == NULL)
     return NULL;
@@ -366,16 +374,3 @@ static char *strip_quotes(char *string) {
 static bool is_at_end(Lexer *lex, const char *source) {
   return lex->cursor >= (int)strlen(source);
 }
-
-static bool is_whitespace(const char ch) {
-  return ch == ' ' || ch == '\r' || ch == '\t' || ch == '\n';
-}
-static bool is_digit(const char ch) { return ch >= '0' && ch <= '9'; }
-
-static bool is_alpha(const char ch) {
-  return ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) || ch == '_';
-}
-
-#if 0
-static bool is_alphanum(const char ch) { return is_alpha(ch) || is_digit(ch); }
-#endif

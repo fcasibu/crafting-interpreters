@@ -1,5 +1,6 @@
-#include "log.h"
 #include <stdio.h>
+
+#include "log.h"
 
 void error(const char *file_name, int line, int col, const char *message) {
   report(file_name, line, col, "", message, "Error");

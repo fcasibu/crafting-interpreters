@@ -1,5 +1,6 @@
-#include "token.h"
 #include <stdio.h>
+
+#include "token.h"
 
 Token create_token(TokenType type, char *lexeme, char *literal, int line,
                    int col) {
