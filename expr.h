@@ -3,7 +3,13 @@
 
 #include "lex.h"
 
-typedef enum { INT_TYPE, DOUBLE_TYPE, STRING_TYPE, NULL_TYPE } LiteralType;
+typedef enum {
+  INT_TYPE,
+  DOUBLE_TYPE,
+  STRING_TYPE,
+  BOOLEAN_TYPE,
+  NULL_TYPE
+} LiteralType;
 
 typedef struct {
   LiteralType type;
@@ -11,6 +17,7 @@ typedef struct {
     int int_val;
     double double_val;
     char *string_val;
+    bool boolean_val;
     void *null_val;
   } value;
 } LiteralValue;
@@ -54,5 +61,6 @@ Expression *create_grouping_expr(Expression *expr);
 Expression *create_literal_int_expr(int value);
 Expression *create_literal_double_expr(double value);
 Expression *create_literal_string_expr(char *value);
+Expression *create_literal_boolean_expr(bool value);
 
 #endif // _EXPR_H_

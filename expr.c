@@ -1,4 +1,5 @@
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -204,6 +205,18 @@ Expression *create_literal_string_expr(char *value) {
   return Expr;
 }
 
+Expression *create_literal_boolean_expr(bool value) {
+  Expression *Expr = create_literal_expr();
+
+  if (Expr == NULL)
+    return NULL;
+
+  Expr->Type->Literal->literal.type = BOOLEAN_TYPE;
+  Expr->Type->Literal->literal.value.boolean_val = value;
+
+  return Expr;
+}
+
 char *visit_unary_expr(Expression *Expr) {
   return parenthesize(Expr->Type->Unary->op.lexeme, 1,
                       Expr->Type->Unary->right);
@@ -224,6 +237,14 @@ LiteralValue visit_literal_expr(Expression *Expr) {
 
 // TODO: Visitor pattern in c? (how lol)
 void print(Expression *Expr) {
+  if (Expr == NULL)
+    return;
+
+  if (Expr->Type == NULL) {
+    free_expr(Expr);
+    return;
+  }
+
   if (Expr->Type->Unary != NULL) {
     printf("Result: %s\n", visit_unary_expr(Expr));
   } else if (Expr->Type->Binary != NULL) {
@@ -240,6 +261,9 @@ void print(Expression *Expr) {
       printf("Result: %f\n", lv.value.double_val);
     case STRING_TYPE:
       printf("Result: %s\n", lv.value.string_val);
+      break;
+    case BOOLEAN_TYPE:
+      printf("Result: %s\n", lv.value.boolean_val ? "true" : "false");
       break;
     case NULL_TYPE:
       printf("Result: %s\n", (char *)lv.value.null_val);
@@ -289,6 +313,9 @@ char *parenthesize(char *name, int expr_count, ...) {
         break;
       case STRING_TYPE:
         snprintf(result + index, BUFFER_SIZE, "%s", lv.value.string_val);
+        break;
+      case BOOLEAN_TYPE:
+        snprintf(result + index, BUFFER_SIZE, "%d", lv.value.boolean_val);
         break;
       case NULL_TYPE:
         snprintf(result + index, BUFFER_SIZE, "%s", (char *)lv.value.null_val);
