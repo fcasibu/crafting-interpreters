@@ -15,7 +15,7 @@ typedef struct {
 } Lexer;
 // clang-format on
 
-Lexer *init_lexer(const char *source, const char *file_name);
+Lexer *create_lexer(const char *source, const char *file_name);
 Lexer *scan_tokens(const char *source, const char *file_name);
 
 void free_lexer(Lexer *lexer);

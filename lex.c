@@ -27,7 +27,7 @@ static bool is_at_end(Lexer *lex, const char *source);
 static void skip_whitespace(Lexer *lexer, const char *source);
 
 Lexer *scan_tokens(const char *source, const char *file_name) {
-  Lexer *lex = init_lexer(source, file_name);
+  Lexer *lex = create_lexer(source, file_name);
   if (lex == NULL)
     return lex;
 
@@ -50,10 +50,11 @@ void free_lexer(Lexer *lexer) {
   }
 
   for (int i = 0; i < lexer->size; ++i) {
-    if (lexer->tokens[i].lexeme != NULL) {
-      free(lexer->tokens[i].lexeme);
-      lexer->tokens[i].lexeme = NULL;
-    }
+    if (lexer->tokens[i].lexeme == NULL)
+      continue;
+
+    free(lexer->tokens[i].lexeme);
+    lexer->tokens[i].lexeme = NULL;
   }
 
   free(lexer->tokens);
@@ -61,7 +62,7 @@ void free_lexer(Lexer *lexer) {
   free(lexer);
 }
 
-Lexer *init_lexer(const char *source, const char *file_name) {
+Lexer *create_lexer(const char *source, const char *file_name) {
   Lexer *lexer = (Lexer *)malloc(sizeof(Lexer));
 
   if (lexer == NULL)
@@ -69,8 +70,10 @@ Lexer *init_lexer(const char *source, const char *file_name) {
 
   lexer->tokens = (Token *)malloc(sizeof(Token) * lexer->size);
 
-  if (lexer->tokens == NULL)
+  if (lexer->tokens == NULL) {
+    free_lexer(lexer);
     return NULL;
+  }
 
   lexer->size = 0;
   lexer->cursor = 0;

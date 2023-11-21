@@ -28,8 +28,10 @@ Expression *create_expr() {
 
   Expr->Type = (ExpressionType *)malloc(sizeof(ExpressionType));
 
-  if (Expr->Type == NULL)
+  if (Expr->Type == NULL) {
+    free_expr(Expr);
     return NULL;
+  }
 
   Expr->Type->Unary = NULL;
   Expr->Type->Binary = NULL;
@@ -54,6 +56,7 @@ void free_expr(Expression *Expr) {
   free_literal_expr(Expr);
 
   free(Expr->Type);
+  Expr->Type = NULL;
   free(Expr);
 }
 
@@ -63,6 +66,7 @@ void free_unary_expr(Expression *Expr) {
 
   free_expr(Expr->Type->Unary->right);
   free(Expr->Type->Unary);
+  Expr->Type->Unary = NULL;
 }
 
 void free_binary_expr(Expression *Expr) {
@@ -82,6 +86,7 @@ void free_grouping_expr(Expression *Expr) {
   free_expr(Expr->Type->Grouping->expr);
 
   free(Expr->Type->Grouping);
+  Expr->Type->Grouping = NULL;
 }
 
 void free_literal_expr(Expression *Expr) {
@@ -89,6 +94,7 @@ void free_literal_expr(Expression *Expr) {
     return;
 
   free(Expr->Type->Literal);
+  Expr->Type->Literal = NULL;
 }
 
 Expression *create_unary_expr(Token op, Expression *right) {
@@ -99,8 +105,10 @@ Expression *create_unary_expr(Token op, Expression *right) {
 
   Expr->Type->Unary = (UnaryExpr *)malloc(sizeof(UnaryExpr));
 
-  if (Expr->Type->Unary == NULL)
+  if (Expr->Type->Unary == NULL) {
+    free_expr(Expr);
     return NULL;
+  }
 
   Expr->Type->Unary->op = op;
   Expr->Type->Unary->right = right;
@@ -116,8 +124,10 @@ Expression *create_binary_expr(Expression *left, Token op, Expression *right) {
 
   Expr->Type->Binary = (BinaryExpr *)malloc(sizeof(BinaryExpr));
 
-  if (Expr->Type->Binary == NULL)
+  if (Expr->Type->Binary == NULL) {
+    free_expr(Expr);
     return NULL;
+  }
 
   Expr->Type->Binary->left = left;
   Expr->Type->Binary->op = op;
@@ -134,8 +144,10 @@ Expression *create_grouping_expr(Expression *expr_value) {
 
   Expr->Type->Grouping = (GroupingExpr *)malloc(sizeof(GroupingExpr));
 
-  if (Expr->Type->Grouping == NULL)
+  if (Expr->Type->Grouping == NULL) {
+    free_expr(Expr);
     return NULL;
+  }
 
   Expr->Type->Grouping->expr = expr_value;
 
@@ -150,8 +162,10 @@ static Expression *create_literal_expr() {
 
   Expr->Type->Literal = (LiteralExpr *)malloc(sizeof(LiteralExpr));
 
-  if (Expr->Type->Literal == NULL)
+  if (Expr->Type->Literal == NULL) {
+    free_expr(Expr);
     return NULL;
+  }
 
   return Expr;
 }
