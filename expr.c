@@ -6,12 +6,12 @@
 
 #include "expr.h"
 
-static char *parenthesize(char *name, int expr_count, ...);
+static char *parenthesize(const char *name, const int expr_count, ...);
 
-static char *visit_unary_expr(Expression *Expr);
-static char *visit_binary_expr(Expression *Expr);
-static char *visit_grouping_expr(Expression *Expr);
-static LiteralValue visit_literal_expr(Expression *Expr);
+static char *visit_unary_expr(const Expression *Expr);
+static char *visit_binary_expr(const Expression *Expr);
+static char *visit_grouping_expr(const Expression *Expr);
+static LiteralValue visit_literal_expr(const Expression *Expr);
 
 static void free_unary_expr(Expression *Expr);
 static void free_binary_expr(Expression *Expr);
@@ -193,7 +193,7 @@ Expression *create_literal_double_expr(double value) {
 
   return Expr;
 }
-Expression *create_literal_string_expr(char *value) {
+Expression *create_literal_string_expr(const char *value) {
   Expression *Expr = create_literal_expr();
 
   if (Expr == NULL)
@@ -216,34 +216,40 @@ Expression *create_literal_boolean_expr(bool value) {
 
   return Expr;
 }
+Expression *create_literal_null_expr() {
+  Expression *Expr = create_literal_expr();
 
-char *visit_unary_expr(Expression *Expr) {
+  if (Expr == NULL)
+    return NULL;
+
+  Expr->Type->Literal->literal.type = NULL_TYPE;
+  Expr->Type->Literal->literal.value.null_val = NULL;
+
+  return Expr;
+}
+
+char *visit_unary_expr(const Expression *Expr) {
   return parenthesize(Expr->Type->Unary->op.lexeme, 1,
                       Expr->Type->Unary->right);
 }
 
-char *visit_binary_expr(Expression *Expr) {
+char *visit_binary_expr(const Expression *Expr) {
   return parenthesize(Expr->Type->Binary->op.lexeme, 2,
                       Expr->Type->Binary->left, Expr->Type->Binary->right);
 }
 
-char *visit_grouping_expr(Expression *Expr) {
+char *visit_grouping_expr(const Expression *Expr) {
   return parenthesize("group", 1, Expr->Type->Grouping->expr);
 }
 
-LiteralValue visit_literal_expr(Expression *Expr) {
+LiteralValue visit_literal_expr(const Expression *Expr) {
   return Expr->Type->Literal->literal;
 }
 
 // TODO: Visitor pattern in c? (how lol)
-void print(Expression *Expr) {
-  if (Expr == NULL)
+void print(const Expression *Expr) {
+  if (Expr == NULL || Expr->Type == NULL)
     return;
-
-  if (Expr->Type == NULL) {
-    free_expr(Expr);
-    return;
-  }
 
   if (Expr->Type->Unary != NULL) {
     printf("Result: %s\n", visit_unary_expr(Expr));
@@ -252,7 +258,7 @@ void print(Expression *Expr) {
   } else if (Expr->Type->Grouping != NULL) {
     printf("Result: %s\n", visit_grouping_expr(Expr));
   } else if (Expr->Type->Literal != NULL) {
-    LiteralValue lv = visit_literal_expr(Expr);
+    const LiteralValue lv = visit_literal_expr(Expr);
     switch (lv.type) {
     case INT_TYPE:
       printf("Result: %d\n", lv.value.int_val);
@@ -274,7 +280,7 @@ void print(Expression *Expr) {
 
 #define BUFFER_SIZE 2048
 
-char *parenthesize(char *name, int expr_count, ...) {
+char *parenthesize(const char *name, const int expr_count, ...) {
   // TODO: create a better string builder
   char *result = (char *)malloc(BUFFER_SIZE);
   if (result == NULL) {
@@ -291,7 +297,7 @@ char *parenthesize(char *name, int expr_count, ...) {
   index += strlen(result + index);
 
   for (int i = 0; i < expr_count; ++i) {
-    Expression *Expr = va_arg(args, Expression *);
+    const Expression *Expr = va_arg(args, Expression *);
     result[index++] = ' ';
 
     if (Expr->Type->Unary != NULL) {
@@ -303,7 +309,7 @@ char *parenthesize(char *name, int expr_count, ...) {
     } else if (Expr->Type->Literal != NULL) {
       // TODO: there will be a lot of switch cases with this union, is there a
       // better way :thinking:
-      LiteralValue lv = visit_literal_expr(Expr);
+      const LiteralValue lv = visit_literal_expr(Expr);
       switch (lv.type) {
       case INT_TYPE:
         snprintf(result + index, BUFFER_SIZE, "%d", lv.value.int_val);
@@ -315,7 +321,8 @@ char *parenthesize(char *name, int expr_count, ...) {
         snprintf(result + index, BUFFER_SIZE, "%s", lv.value.string_val);
         break;
       case BOOLEAN_TYPE:
-        snprintf(result + index, BUFFER_SIZE, "%d", lv.value.boolean_val);
+        snprintf(result + index, BUFFER_SIZE, "%s",
+                 lv.value.boolean_val ? "true" : "false");
         break;
       case NULL_TYPE:
         snprintf(result + index, BUFFER_SIZE, "%s", (char *)lv.value.null_val);

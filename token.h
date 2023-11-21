@@ -21,17 +21,17 @@ typedef enum {
 
   END_OF_FILE
 } TokenType;
-
-typedef struct {
-  int       line;
-  int       col;
-  char      *lexeme;
-  void      *literal;
-  TokenType type;
-} Token;
 // clang-format on
 
-Token create_token(TokenType type, char *lexeme, char *literal, int line,
+typedef struct {
+  int line;
+  int col;
+  char *lexeme;
+  void *literal;
+  TokenType type;
+} Token;
+
+Token create_token(TokenType type, char *lexeme, void *literal, int line,
                    int col);
 const char *format_token_type(TokenType token_type);
 void print_token(Token token, const char *file_name);

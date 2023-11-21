@@ -8,22 +8,22 @@
 #include "utils.h"
 
 static TokenType scan_token(Lexer *lexer, const char *source);
-static TokenType get_ident_token_type(char *ident);
-static void add_token(Lexer *lexer, Token token);
+static TokenType get_ident_token_type(const char *ident);
+static void add_token(Lexer *lexer, const Token token);
 
-static char peek(Lexer *lexer, const char *source);
-static char peek_next(Lexer *lexer, const char *source);
-static int get_current_col(Token token);
+static char peek(const Lexer *lexer, const char *source);
+static char peek_next(const Lexer *lexer, const char *source);
+static int get_current_col(const Token token);
 static void read_char(Lexer *lexer, const char *source);
 static void read_line(Lexer *lexer, const char *source);
 static void read_string(Lexer *lexer, const char *source);
 static void read_number(Lexer *lexer, const char *source);
 static void read_ident(Lexer *lexer, const char *source);
-static void *get_literal(TokenType type, void *value);
+static void *get_literal(const TokenType type, void *value);
 static char *get_text(const char *source, int start, size_t bytes_to_copy);
 static bool match(Lexer *lexer, const char *source, char c);
-static char *strip_quotes(char *string);
-static bool is_at_end(Lexer *lex, const char *source);
+static char *strip_quotes(const char *string);
+static bool is_at_end(const Lexer *lex, const char *source);
 static void skip_whitespace(Lexer *lexer, const char *source);
 
 Lexer *scan_tokens(const char *source, const char *file_name) {
@@ -54,7 +54,6 @@ void free_lexer(Lexer *lexer) {
       continue;
 
     free(lexer->tokens[i].lexeme);
-    lexer->tokens[i].lexeme = NULL;
   }
 
   free(lexer->tokens);
@@ -71,7 +70,6 @@ Lexer *create_lexer(const char *source, const char *file_name) {
   lexer->tokens = (Token *)malloc(sizeof(Token) * lexer->size);
 
   if (lexer->tokens == NULL) {
-    free_lexer(lexer);
     return NULL;
   }
 
@@ -89,11 +87,11 @@ Lexer *create_lexer(const char *source, const char *file_name) {
 static void read_line(Lexer *lexer, const char *source) {
   skip_whitespace(lexer, source);
 
-  int start = lexer->cursor - 1;
-  int lines = lexer->line;
+  const int start = lexer->cursor - 1;
+  const int lines = lexer->line;
   TokenType type = scan_token(lexer, source);
 
-  size_t bytes_to_copy = lexer->cursor - start - 1;
+  const size_t bytes_to_copy = lexer->cursor - start - 1;
   char *text = get_text(source, start, bytes_to_copy);
 
   if (text == NULL)
@@ -103,14 +101,14 @@ static void read_line(Lexer *lexer, const char *source) {
     type = get_ident_token_type(text);
   }
 
-  Token token =
+  const Token token =
       create_token(type, text, get_literal(type, text), lines, lexer->col);
   add_token(lexer, token);
   lexer->col += get_current_col(token);
 }
 
 static void read_string(Lexer *lexer, const char *source) {
-  int start_line = lexer->line;
+  const int start_line = lexer->line;
   while (peek(lexer, source) != '"' && !is_at_end(lexer, source))
     read_char(lexer, source);
 
@@ -141,7 +139,7 @@ static void read_ident(Lexer *lexer, const char *source) {
   }
 }
 
-static void *get_literal(TokenType type, void *value) {
+static void *get_literal(const TokenType type, void *value) {
   switch (type) {
   case STRING: {
     char *stripped_value = strip_quotes(value);
@@ -158,7 +156,8 @@ static void *get_literal(TokenType type, void *value) {
   }
   }
 }
-static char *get_text(const char *source, int start, size_t bytes_to_copy) {
+static char *get_text(const char *source, int start,
+                      const size_t bytes_to_copy) {
   char *text = (char *)malloc(sizeof(char) * bytes_to_copy + 1);
 
   if (text == NULL) {
@@ -224,7 +223,7 @@ static TokenType scan_token(Lexer *lexer, const char *source) {
       }
       token_type = COMMENT;
     } else if (match(lexer, source, '*')) {
-      int start_line = lexer->line;
+      const int start_line = lexer->line;
       while (peek_next(lexer, source) != '/' && !is_at_end(lexer, source)) {
         read_char(lexer, source);
       }
@@ -267,7 +266,7 @@ static TokenType scan_token(Lexer *lexer, const char *source) {
   return token_type;
 }
 
-static TokenType get_ident_token_type(char *ident) {
+static TokenType get_ident_token_type(const char *ident) {
   // TODO: use hashmap
   if (strcmp(ident, "and") == 0)
     return AND;
@@ -313,14 +312,14 @@ static void skip_whitespace(Lexer *lexer, const char *source) {
   }
 }
 
-static char peek(Lexer *lexer, const char *source) {
+static char peek(const Lexer *lexer, const char *source) {
   if (is_at_end(lexer, source))
     return '\0';
 
   return source[lexer->cursor];
 }
 
-static char peek_next(Lexer *lexer, const char *source) {
+static char peek_next(const Lexer *lexer, const char *source) {
   if (is_at_end(lexer, source))
     return '\0';
 
@@ -337,7 +336,7 @@ static void read_char(Lexer *lexer, const char *source) {
   lexer->cursor += 1;
 }
 
-static int get_current_col(Token token) {
+static int get_current_col(const Token token) {
   if (token.lexeme != NULL)
     return strlen(token.lexeme);
 
@@ -362,18 +361,18 @@ static bool match(Lexer *lexer, const char *source, char c) {
   return true;
 }
 
-static char *strip_quotes(char *string) {
+static char *strip_quotes(const char *string) {
   char *result = (char *)malloc(sizeof(char) * strlen(string) + 1);
 
   if (result == NULL)
     return NULL;
 
-  size_t bytes_to_copy = strlen(string) - 2;
+  const size_t bytes_to_copy = strlen(string) - 2;
   strncpy(result, (char *)string + 1, bytes_to_copy);
   result[strlen(result)] = '\0';
   return result;
 }
 
-static bool is_at_end(Lexer *lex, const char *source) {
+static bool is_at_end(const Lexer *lex, const char *source) {
   return lex->cursor >= (int)strlen(source);
 }

@@ -1,9 +1,6 @@
 // This is a comment
-
 (( )){} // grouping stuff
-
 !*+-/=<> <= == >= // operators
-
 "Hello, World!" // This is a string
 
 1234 // This is a number

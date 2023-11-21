@@ -16,9 +16,9 @@ typedef struct {
   union {
     int int_val;
     double double_val;
-    char *string_val;
+    const char *string_val;
     bool boolean_val;
-    void *null_val;
+    const void *null_val;
   } value;
 } LiteralValue;
 
@@ -52,7 +52,7 @@ typedef struct Expression {
   ExpressionType *Type;
 } Expression;
 
-void print(Expression *expr);
+void print(const Expression *expr);
 
 void free_expr(Expression *expr);
 Expression *create_unary_expr(Token op, Expression *right);
@@ -60,7 +60,8 @@ Expression *create_binary_expr(Expression *left, Token op, Expression *right);
 Expression *create_grouping_expr(Expression *expr);
 Expression *create_literal_int_expr(int value);
 Expression *create_literal_double_expr(double value);
-Expression *create_literal_string_expr(char *value);
+Expression *create_literal_string_expr(const char *value);
 Expression *create_literal_boolean_expr(bool value);
+Expression *create_literal_null_expr();
 
 #endif // _EXPR_H_

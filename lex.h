@@ -3,17 +3,15 @@
 
 #include "token.h"
 
-// clang-format off
 typedef struct {
-  int   size;
-  int   cursor;
-  int   line;
-  int   col;
-  char  ch;
+  int size;
+  int cursor;
+  int line;
+  int col;
+  char ch;
   const char *file_name;
   Token *tokens;
 } Lexer;
-// clang-format on
 
 Lexer *create_lexer(const char *source, const char *file_name);
 Lexer *scan_tokens(const char *source, const char *file_name);

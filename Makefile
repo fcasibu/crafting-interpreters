@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c2x -pedantic
-SRC_FILES = main.c lex.c log.c token.c expr.c utils.c
+SRC_FILES = main.c lex.c log.c token.c expr.c utils.c parser.c
 TARGET = lox
 
 $(TARGET): $(SRC_FILES)

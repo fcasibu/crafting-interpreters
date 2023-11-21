@@ -2,7 +2,7 @@
 
 #include "token.h"
 
-Token create_token(TokenType type, char *lexeme, char *literal, int line,
+Token create_token(TokenType type, char *lexeme, void *literal, int line,
                    int col) {
   return (Token){.type = type,
                  .lexeme = lexeme,
