@@ -1,13 +1,11 @@
-CC = gcc
-CFLAGS = -Wall -Wextra -std=c2x -pedantic
-SRC_FILES = main.c lex.c log.c token.c expr.c utils.c parser.c
+CC = clang
+CFLAGS = -std=c2x -Wall -Wextra -Wpedantic
+INCLUDE_LIBS = -I./include
+SRC = main.c
 TARGET = lox
 
-$(TARGET): $(SRC_FILES)
-	$(CC) $(CFLAGS) -o $@ $^
-
-run: $(TARGET)
-	./$(TARGET) $(file)
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) $(INCLUDE_LIBS) -o $@ $^
 
 clean:
 	rm -f $(TARGET)
