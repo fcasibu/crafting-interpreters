@@ -18,6 +18,7 @@ typedef enum {
   // Single-character tokens.
   LEFT_PAREN, RIGHT_PAREN, LEFT_BRACE, RIGHT_BRACE,
   COMMA, DOT, MINUS, PLUS, SEMICOLON, SLASH, STAR,
+  QUESTION_MARK, COLON,
 
   // One or two character tokens.
   BANG, BANG_EQUAL,
@@ -167,6 +168,8 @@ void tokenize(context_t *ctx, lexer_t *lexer);
 void parse(context_t *ctx, parser_t *parser);
 ast_node_t *parse_statement(context_t *ctx, parser_t *parser);
 ast_node_t *parse_expression(context_t *ctx, parser_t *parser);
+ast_node_t *parse_ternary(context_t *ctx, parser_t *parser);
+ast_node_t *parse_logical_or(context_t *ctx, parser_t *parser);
 ast_node_t *parse_equality(context_t *ctx, parser_t *parser);
 ast_node_t *parse_comparison(context_t *ctx, parser_t *parser);
 ast_node_t *parse_term(context_t *ctx, parser_t *parser);
@@ -194,8 +197,10 @@ ast_node_t *create_node(arena_t *arena, node_type_t type, node_value_t value);
 bool parser_is_eof(parser_t *parser);
 token_t peek_parser(parser_t *parser);
 token_t peek_next_parser(parser_t *parser);
+token_t previous_parser(parser_t *parser);
 token_t advance_parser(parser_t *parser);
 bool match_parser(parser_t *parser, usize count, ...);
+void synchronize(parser_t *parser);
 const char *intern(context_t *ctx, const char *s);
 const char *intern_token_lexeme(context_t *ctx, parser_t *parser);
 
@@ -239,6 +244,18 @@ static void print_token_type(token_type_t type)
         break;
     case GREATER_EQUAL:
         printf(">=");
+        break;
+    case COMMA:
+        printf(",");
+        break;
+    case QUESTION_MARK:
+        printf("?");
+        break;
+    case COLON:
+        printf(":");
+        break;
+    case OR:
+        printf("or");
         break;
     default:
         printf("tok(%d)", type);
@@ -327,7 +344,6 @@ int main(int argc, char **argv)
     }
 
     const char *source_filename = argv[1];
-    LOG(LOG_INFO, "Initialized %s", source_filename);
 
     const char *source = get_input(&arena, source_filename);
 
@@ -361,16 +377,13 @@ void run(context_t *ctx)
 
     tokenize(ctx, &lexer);
 
-    for (usize i = 0; i < lexer.tokens.size; ++i) {
-        token_t tok = lexer.tokens.items[i];
-        LOG(LOG_INFO, "TOKEN = %d, %.*s, %zu, %zu", tok.type, (int)tok.lexeme_len, tok.lexeme,
-            tok.line, tok.col);
-    }
-
     parser_t parser = { 0 };
     parser.tokens = lexer.tokens.items;
     parser.tokens_size = lexer.tokens.size;
     parse(ctx, &parser);
+
+    if (had_error)
+        return;
 
     print_ast(parser.root, 0);
 }
@@ -383,8 +396,9 @@ void parse(context_t *ctx, parser_t *parser)
     while (parser->current_index < parser->tokens_size && !parser_is_eof(parser)) {
         ast_node_t *node = parse_statement(ctx, parser);
 
-        if (!node)
+        if (!node) {
             continue;
+        }
 
         arena_da_append(ctx->arena, &prog_stmts, node);
     }
@@ -399,15 +413,102 @@ ast_node_t *parse_statement(context_t *ctx, parser_t *parser)
     token_t tok = peek_parser(parser);
 
     switch (tok.type) {
-    default:
-        return parse_expression(ctx, parser);
+    default: {
+        ast_node_t *left = parse_expression(ctx, parser);
+        if (!left) {
+            synchronize(parser);
+            return NULL;
+        }
+
+        while (!parser_is_eof(parser) && match_parser(parser, 1, COMMA)) {
+            token_t op = advance_parser(parser);
+
+            ast_node_t *right = parse_expression(ctx, parser);
+
+            if (!right) {
+                synchronize(parser);
+                return NULL;
+            }
+
+            node_value_t node_value = {
+                .binary = { .op = op.type, .left = left, .right = right },
+            };
+            left = create_node(ctx->arena, NODE_BINARY, node_value);
+        }
+
+        return left;
+    }
     }
 }
 
 ast_node_t *parse_expression(context_t *ctx, parser_t *parser)
 {
-    return parse_equality(ctx, parser);
+    return parse_ternary(ctx, parser);
 }
+
+ast_node_t *parse_ternary(context_t *ctx, parser_t *parser)
+{
+    ast_node_t *condition = parse_logical_or(ctx, parser);
+    if (!condition) {
+        report_unexpected_token(ctx, peek_parser(parser), "expression");
+        synchronize(parser);
+        return NULL;
+    }
+
+    if (!match_parser(parser, 1, QUESTION_MARK))
+        return condition;
+
+    advance_parser(parser);
+
+    ast_node_t *true_branch = parse_logical_or(ctx, parser);
+    if (!true_branch) {
+        report_unexpected_token(ctx, peek_parser(parser), "expression");
+        synchronize(parser);
+        return NULL;
+    }
+
+    token_t colon = advance_parser(parser);
+    if (colon.type != COLON) {
+        report_unexpected_token(ctx, colon, ":");
+        return NULL;
+    }
+
+    ast_node_t *false_branch = parse_ternary(ctx, parser);
+    if (!false_branch) {
+        synchronize(parser);
+        return NULL;
+    }
+
+    node_value_t value = { .binary = {
+                               .left = condition, .op = QUESTION_MARK, .right = true_branch } };
+
+    ast_node_t *ternary_node = create_node(ctx->arena, NODE_BINARY, value);
+
+    value = (node_value_t){
+        .binary = { .left = ternary_node, .op = QUESTION_MARK, .right = false_branch }
+    };
+    return create_node(ctx->arena, NODE_BINARY, value);
+}
+
+ast_node_t *parse_logical_or(context_t *ctx, parser_t *parser)
+{
+    ast_node_t *left = parse_comparison(ctx, parser);
+
+    while (!parser_is_eof(parser) && match_parser(parser, 1, OR)) {
+        token_t op = advance_parser(parser);
+
+        ast_node_t *right = parse_comparison(ctx, parser);
+
+        if (!right)
+            return NULL;
+
+        node_value_t value = { .binary = { .left = left, .op = op.type, .right = right } };
+        left = create_node(ctx->arena, NODE_BINARY, value);
+    }
+
+    return left;
+}
+
 ast_node_t *parse_equality(context_t *ctx, parser_t *parser)
 {
     ast_node_t *left = parse_comparison(ctx, parser);
@@ -489,13 +590,7 @@ ast_node_t *parse_unary(context_t *ctx, parser_t *parser)
 
     switch (tok.type) {
     case PLUS: {
-        if (peek_next_parser(parser).type == PLUS) {
-            advance_parser(parser);
-            advance_parser(parser);
-
-            return parse_unary(ctx, parser);
-        }
-
+        advance_parser(parser);
         ast_node_t *node = parse_primary(ctx, parser);
 
         node_value_t value = { .unary = { .op = tok.type, .child = node } };
@@ -503,13 +598,7 @@ ast_node_t *parse_unary(context_t *ctx, parser_t *parser)
     };
 
     case MINUS: {
-        if (peek_next_parser(parser).type == MINUS) {
-            advance_parser(parser);
-            advance_parser(parser);
-
-            return parse_unary(ctx, parser);
-        }
-
+        advance_parser(parser);
         ast_node_t *node = parse_primary(ctx, parser);
 
         node_value_t value = { .unary = { .op = tok.type, .child = node } };
@@ -555,23 +644,28 @@ ast_node_t *parse_primary(context_t *ctx, parser_t *parser)
         return create_node(ctx->arena, NODE_NIL, (node_value_t){});
     }
 
-    default: {
-        if (tok.type == LEFT_PAREN) {
-            advance_parser(parser);
-            ast_node_t *node = parse_expression(ctx, parser);
-            token_t next_tok = advance_parser(parser);
-            if (next_tok.type != RIGHT_PAREN) {
-                report_unexpected_token(ctx, next_tok, ")");
-                return NULL;
-            }
-
-            return node;
-        }
-
+    case IDENTIFIER: {
         ast_node_t *node = parse_identifier(ctx, parser);
         advance_parser(parser);
 
         return node;
+    }
+
+    case LEFT_PAREN: {
+        advance_parser(parser);
+        ast_node_t *node = parse_expression(ctx, parser);
+        token_t next_tok = advance_parser(parser);
+        if (next_tok.type != RIGHT_PAREN) {
+            report_unexpected_token(ctx, next_tok, ")");
+            return NULL;
+        }
+
+        return node;
+    }
+
+    default: {
+        report_unexpected_token(ctx, tok, "expression");
+        return NULL;
     }
     }
 }
@@ -713,6 +807,15 @@ void tokenize(context_t *ctx, lexer_t *lexer)
 
         case '*': {
             append_token(ctx, lexer, STAR, lexeme, 1, line_idx, col_idx, cursor, line_start);
+        } break;
+
+        case '?': {
+            append_token(ctx, lexer, QUESTION_MARK, lexeme, 1, line_idx, col_idx, cursor,
+                         line_start);
+        } break;
+
+        case ':': {
+            append_token(ctx, lexer, COLON, lexeme, 1, line_idx, col_idx, cursor, line_start);
         } break;
 
         case '!': {
@@ -965,10 +1068,8 @@ void report_unexpected_token(context_t *ctx, token_t tok, const char *expected)
     char error_msg[256];
     usize error_msg_len = sizeof(error_msg);
     usize max_lexeme_len = tok.lexeme_len < error_msg_len ? tok.lexeme_len : error_msg_len;
-    snprintf(error_msg, sizeof(error_msg), "expected %s, but got %.*s%s.", expected,
+    snprintf(error_msg, sizeof(error_msg), "expected %s, but got %.*s%s", expected,
              (int)max_lexeme_len, tok.lexeme, tok.lexeme_len > max_lexeme_len ? "..." : "");
-
-    LOG(LOG_INFO, "LINE START = %zu", tok.line_start);
 
     report(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source, tok.line_start, error_msg);
 }
@@ -1002,23 +1103,33 @@ ast_node_t *create_node(arena_t *arena, node_type_t type, node_value_t value)
     return node;
 }
 
+token_t previous_parser(parser_t *parser)
+{
+    assert(parser->current_index > 0);
+
+    return parser->tokens[parser->current_index - 1];
+}
+
 token_t peek_parser(parser_t *parser)
 {
-    assert(parser->current_index < parser->tokens_size);
+    if (parser->current_index >= parser->tokens_size)
+        return parser->tokens[parser->tokens_size - 1];
 
     return parser->tokens[parser->current_index];
 }
 
 token_t peek_next_parser(parser_t *parser)
 {
-    assert(parser->current_index + 1 < parser->tokens_size);
+    if (parser->current_index >= parser->tokens_size)
+        return parser->tokens[parser->tokens_size - 1];
 
     return parser->tokens[parser->current_index + 1];
 }
 
 token_t advance_parser(parser_t *parser)
 {
-    assert(parser->current_index < parser->tokens_size);
+    if (parser->current_index >= parser->tokens_size)
+        return parser->tokens[parser->tokens_size - 1];
 
     return parser->tokens[parser->current_index++];
 }
@@ -1038,6 +1149,34 @@ bool match_parser(parser_t *parser, usize count, ...)
 
     va_end(args);
     return false;
+}
+
+void synchronize(parser_t *parser)
+{
+    advance_parser(parser);
+
+    while (!parser_is_eof(parser)) {
+        if (previous_parser(parser).type == SEMICOLON)
+            return;
+
+        switch (peek_parser(parser).type) {
+        case CLASS:
+        case FUN:
+        case QUESTION_MARK:
+        case COLON:
+        case VAR:
+        case FOR:
+        case IF:
+        case WHILE:
+        case PRINT:
+        case RETURN:
+            return;
+        default:
+            break;
+        }
+
+        advance_parser(parser);
+    }
 }
 
 const char *intern(context_t *ctx, const char *s)
