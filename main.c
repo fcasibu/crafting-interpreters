@@ -40,7 +40,7 @@ typedef enum {
 typedef enum {
     // clang-format off
     NODE_NUMBER, NODE_STRING, NODE_BOOL, NODE_NIL, NODE_UNARY, NODE_BINARY,
-    NODE_PROGRAM, NODE_IDENTIFIER
+    NODE_PROGRAM, NODE_IDENTIFIER, NODE_TERNARY
     // clang-format on
 } node_type_t;
 
@@ -89,6 +89,12 @@ typedef union {
         struct ast_node *left;
         struct ast_node *right;
     } binary;
+
+    struct {
+        struct ast_node *condition;
+        struct ast_node *true_branch;
+        struct ast_node *false_branch;
+    } ternary;
 
     struct {
         struct ast_node **statements;
@@ -170,6 +176,7 @@ ast_node_t *parse_statement(context_t *ctx, parser_t *parser);
 ast_node_t *parse_expression(context_t *ctx, parser_t *parser);
 ast_node_t *parse_ternary(context_t *ctx, parser_t *parser);
 ast_node_t *parse_logical_or(context_t *ctx, parser_t *parser);
+ast_node_t *parse_logical_and(context_t *ctx, parser_t *parser);
 ast_node_t *parse_equality(context_t *ctx, parser_t *parser);
 ast_node_t *parse_comparison(context_t *ctx, parser_t *parser);
 ast_node_t *parse_term(context_t *ctx, parser_t *parser);
@@ -311,6 +318,18 @@ void print_ast(ast_node_t *node, int indent)
         print_ast(node->value.binary.right, indent + 1);
         break;
 
+    case NODE_TERNARY:
+        printf("Ternary \n");
+        printf("%*sCondition:\n", (indent + 1) * 2, "");
+        print_ast(node->value.ternary.condition, indent + 2);
+
+        printf("%*sTrue branch:\n", (indent + 1) * 2, "");
+        print_ast(node->value.ternary.true_branch, indent + 2);
+
+        printf("%*sFalse branch:\n", (indent + 1) * 2, "");
+        print_ast(node->value.ternary.false_branch, indent + 2);
+        break;
+
     case NODE_PROGRAM:
         printf("Program (start %zu, end %zu)\n", node->start, node->end);
         for (usize i = 0; i < node->value.program.size; i++)
@@ -376,6 +395,11 @@ void run(context_t *ctx)
     arena_da_init(ctx->arena, &lexer.tokens);
 
     tokenize(ctx, &lexer);
+
+    for (usize i = 0; i < lexer.tokens.size; ++i) {
+        token_t tok = lexer.tokens.items[i];
+        LOG(LOG_INFO, "TOKEN = %.*s", (int)tok.lexeme_len, tok.lexeme);
+    }
 
     parser_t parser = { 0 };
     parser.tokens = lexer.tokens.items;
@@ -460,7 +484,7 @@ ast_node_t *parse_ternary(context_t *ctx, parser_t *parser)
 
     advance_parser(parser);
 
-    ast_node_t *true_branch = parse_logical_or(ctx, parser);
+    ast_node_t *true_branch = parse_ternary(ctx, parser);
     if (!true_branch) {
         report_unexpected_token(ctx, peek_parser(parser), "expression");
         synchronize(parser);
@@ -479,25 +503,40 @@ ast_node_t *parse_ternary(context_t *ctx, parser_t *parser)
         return NULL;
     }
 
-    node_value_t value = { .binary = {
-                               .left = condition, .op = QUESTION_MARK, .right = true_branch } };
+    node_value_t value = { .ternary = { .condition = condition,
+                                        .true_branch = true_branch,
+                                        .false_branch = false_branch } };
 
-    ast_node_t *ternary_node = create_node(ctx->arena, NODE_BINARY, value);
-
-    value = (node_value_t){
-        .binary = { .left = ternary_node, .op = QUESTION_MARK, .right = false_branch }
-    };
-    return create_node(ctx->arena, NODE_BINARY, value);
+    return create_node(ctx->arena, NODE_TERNARY, value);
 }
 
 ast_node_t *parse_logical_or(context_t *ctx, parser_t *parser)
 {
-    ast_node_t *left = parse_comparison(ctx, parser);
+    ast_node_t *left = parse_logical_and(ctx, parser);
 
     while (!parser_is_eof(parser) && match_parser(parser, 1, OR)) {
         token_t op = advance_parser(parser);
 
-        ast_node_t *right = parse_comparison(ctx, parser);
+        ast_node_t *right = parse_logical_and(ctx, parser);
+
+        if (!right)
+            return NULL;
+
+        node_value_t value = { .binary = { .left = left, .op = op.type, .right = right } };
+        left = create_node(ctx->arena, NODE_BINARY, value);
+    }
+
+    return left;
+}
+
+ast_node_t *parse_logical_and(context_t *ctx, parser_t *parser)
+{
+    ast_node_t *left = parse_equality(ctx, parser);
+
+    while (!parser_is_eof(parser) && match_parser(parser, 1, AND)) {
+        token_t op = advance_parser(parser);
+
+        ast_node_t *right = parse_equality(ctx, parser);
 
         if (!right)
             return NULL;
@@ -1120,7 +1159,7 @@ token_t peek_parser(parser_t *parser)
 
 token_t peek_next_parser(parser_t *parser)
 {
-    if (parser->current_index >= parser->tokens_size)
+    if (parser->current_index + 1 >= parser->tokens_size)
         return parser->tokens[parser->tokens_size - 1];
 
     return parser->tokens[parser->current_index + 1];
