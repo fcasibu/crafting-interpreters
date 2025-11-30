@@ -1665,6 +1665,10 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
                             (value_data_t){ .number = left.value.number / right.value.number });
     }
 
+    case COMMA: {
+        return right;
+    }
+
     default: {
         __builtin_unreachable();
     }
@@ -1704,11 +1708,11 @@ value_t interpret_unary(context_t *ctx, ast_node_t *node)
 
 value_t interpret_ternary(context_t *ctx, ast_node_t *node)
 {
-    value_t condition = interpret(ctx, node->value.ternary.condition);
+    bool condition = is_truthy(interpret(ctx, node->value.ternary.condition));
     value_t true_branch = interpret(ctx, node->value.ternary.true_branch);
     value_t false_branch = interpret(ctx, node->value.ternary.false_branch);
 
-    return condition.value.boolean ? true_branch : false_branch;
+    return condition ? true_branch : false_branch;
 }
 
 value_t interpret(context_t *ctx, ast_node_t *node)
