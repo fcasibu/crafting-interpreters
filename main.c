@@ -1581,25 +1581,32 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
 {
     assert(node->type == NODE_BINARY);
 
-    value_t left = interpret(ctx, node->value.binary.left);
-    value_t right = interpret(ctx, node->value.binary.right);
-
     switch (node->value.binary.op.type) {
     case OR: {
-        return create_value(VALUE_BOOL,
-                            (value_data_t){ .boolean = is_truthy(left) || is_truthy(right) });
+        return create_value(
+            VALUE_BOOL,
+            (value_data_t){ .boolean = is_truthy(interpret(ctx, node->value.binary.left)) ||
+                                       is_truthy(interpret(ctx, node->value.binary.right)) });
     }
 
     case AND: {
-        return create_value(VALUE_BOOL,
-                            (value_data_t){ .boolean = is_truthy(left) && is_truthy(right) });
+        return create_value(
+            VALUE_BOOL,
+            (value_data_t){ .boolean = is_truthy(interpret(ctx, node->value.binary.left)) &&
+                                       is_truthy(interpret(ctx, node->value.binary.right)) });
     }
 
     case EQUAL_EQUAL: {
+        value_t left = interpret(ctx, node->value.binary.left);
+        value_t right = interpret(ctx, node->value.binary.right);
+
         return create_value(VALUE_BOOL, (value_data_t){ .boolean = is_equal(left, right) });
     }
 
     case BANG_EQUAL: {
+        value_t left = interpret(ctx, node->value.binary.left);
+        value_t right = interpret(ctx, node->value.binary.right);
+
         return create_value(VALUE_BOOL, (value_data_t){ .boolean = !is_equal(left, right) });
     }
 
@@ -1607,6 +1614,9 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
     case LESS_EQUAL:
     case GREATER:
     case GREATER_EQUAL: {
+        value_t left = interpret(ctx, node->value.binary.left);
+        value_t right = interpret(ctx, node->value.binary.right);
+
         if (!check_number_operands(ctx, node->value.binary.op, left, right))
             return create_error_value();
 
@@ -1616,6 +1626,9 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
     }
 
     case PLUS: {
+        value_t left = interpret(ctx, node->value.binary.left);
+        value_t right = interpret(ctx, node->value.binary.right);
+
         if (left.type == VALUE_STRING || right.type == VALUE_STRING) {
             const char *left_str = stringify_value(ctx, left);
             const char *right_str = stringify_value(ctx, right);
@@ -1633,6 +1646,9 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
                             (value_data_t){ .number = left.value.number + right.value.number });
     }
     case MINUS: {
+        value_t left = interpret(ctx, node->value.binary.left);
+        value_t right = interpret(ctx, node->value.binary.right);
+
         if (!check_number_operands(ctx, node->value.binary.op, left, right))
             return create_error_value();
 
@@ -1641,6 +1657,9 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
     }
 
     case STAR: {
+        value_t left = interpret(ctx, node->value.binary.left);
+        value_t right = interpret(ctx, node->value.binary.right);
+
         if (!check_number_operands(ctx, node->value.binary.op, left, right))
             return create_error_value();
 
@@ -1649,6 +1668,9 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
     }
 
     case SLASH: {
+        value_t left = interpret(ctx, node->value.binary.left);
+        value_t right = interpret(ctx, node->value.binary.right);
+
         if (!check_number_operands(ctx, node->value.binary.op, left, right))
             return create_error_value();
 
@@ -1664,7 +1686,8 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
     }
 
     case COMMA: {
-        return right;
+        interpret(ctx, node->value.binary.left);
+        return interpret(ctx, node->value.binary.right);
     }
 
     default: {
