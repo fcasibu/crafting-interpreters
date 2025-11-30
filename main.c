@@ -1707,10 +1707,10 @@ value_t interpret_unary(context_t *ctx, ast_node_t *node)
 value_t interpret_ternary(context_t *ctx, ast_node_t *node)
 {
     bool condition = is_truthy(interpret(ctx, node->value.ternary.condition));
-    value_t true_branch = interpret(ctx, node->value.ternary.true_branch);
-    value_t false_branch = interpret(ctx, node->value.ternary.false_branch);
+    if (condition)
+        return interpret(ctx, node->value.ternary.true_branch);
 
-    return condition ? true_branch : false_branch;
+    return interpret(ctx, node->value.ternary.false_branch);
 }
 
 value_t interpret(context_t *ctx, ast_node_t *node)
