@@ -8,12 +8,22 @@ TEST_RUNNER = ./tests/run-tests.js
 $(TARGET): $(SRC)
 	$(CC) $(CFLAGS) $(INCLUDE_LIBS) -o $@ $^
 
-test: $(TARGET) $(TEST_RUNNER)
+test:
+
+all: $(TARGET) $(TEST_RUNNER)
 	@chmod +x $(TEST_RUNNER)
-	@$(TEST_RUNNER)
+	@$(TEST_RUNNER) all
+
+parser: $(TARGET) $(TEST_RUNNER)
+	@chmod +x $(TEST_RUNNER)
+	@$(TEST_RUNNER) parser
+
+eval: $(TARGET) $(TEST_RUNNER)
+	@chmod +x $(TEST_RUNNER)
+	@$(TEST_RUNNER) eval
 
 clean:
 	rm -f $(TARGET)
 
-.PHONY: test clean
+.PHONY: test parser eval all clean
 
