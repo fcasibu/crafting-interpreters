@@ -11,6 +11,8 @@ typedef struct {
 
 string_chunks_t *split_str(arena_t *a, const char *input, const char *delim);
 i64 parse_int(const char *source, int base);
+char *number_to_string(arena_t *arena, double number);
+char *concat_str(arena_t *arena, const char *a, const char *b);
 
 #ifdef UTILS_IMPLEMENTATION
 
@@ -29,6 +31,42 @@ i64 parse_int(const char *source, int base);
         fprintf(stderr, "%s:%d: TODO: %s\n", __FILE__, __LINE__, (X)); \
         abort();                                                       \
     } while (0)
+
+char *number_to_string(arena_t *arena, double number)
+{
+    char buf[32];
+    int written = snprintf(buf, sizeof(buf), "%g", number);
+    if (written < 0)
+        return NULL;
+
+    char *res = arena_alloc(arena, written + 1);
+    if (!res)
+        return NULL;
+
+    memcpy(res, buf, written + 1);
+
+    return res;
+}
+
+char *concat_str(arena_t *arena, const char *a, const char *b)
+{
+    if (!a || !b)
+        return NULL;
+
+    usize a_len = strlen(a);
+    usize b_len = strlen(b);
+    usize total = a_len + b_len;
+
+    char *res = arena_alloc(arena, total + 1);
+    if (!res)
+        return NULL;
+
+    memcpy(res, a, a_len);
+    memcpy(res + a_len, b, b_len);
+    res[total] = '\0';
+
+    return res;
+}
 
 string_chunks_t *split_str(arena_t *arena, const char *input, const char *delim)
 {
