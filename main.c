@@ -447,7 +447,7 @@ void run(context_t *ctx)
         } break;
 
         case VALUE_BOOL: {
-            printf("%d\n", value.value.boolean);
+            printf("%s\n", value.value.boolean ? "true" : "false");
         } break;
 
         case VALUE_STRING: {
@@ -1303,8 +1303,6 @@ void report_unexpected_token(context_t *ctx, token_t tok, const char *expected)
 
     report(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source, tok.line_start, error_msg);
 }
-
-char x[] = "1234";
 
 void report_missing_expression(context_t *ctx, token_t tok, const char *error_msg)
 {
