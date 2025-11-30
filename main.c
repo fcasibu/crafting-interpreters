@@ -44,6 +44,24 @@ typedef enum {
     // clang-format on
 } node_type_t;
 
+typedef enum {
+    // clang-format off
+    VALUE_NUMBER, VALUE_STRING, VALUE_BOOL, VALUE_NIL,
+    VALUE_ERROR
+    // clang-format on
+} value_type_t;
+
+typedef union {
+    double number;
+    const char *string;
+    bool boolean;
+} value_data_t;
+
+typedef struct {
+    value_type_t type;
+    value_data_t value;
+} value_t;
+
 typedef struct {
     token_type_t type;
     const char *lexeme;
@@ -80,12 +98,12 @@ typedef union {
     } identifier;
 
     struct {
-        token_type_t op;
+        token_t op;
         struct ast_node *child;
     } unary;
 
     struct {
-        token_type_t op;
+        token_t op;
         struct ast_node *left;
         struct ast_node *right;
     } binary;
@@ -166,6 +184,8 @@ typedef struct {
 
 void report(usize line_idx, usize col_idx, const char *source_filename, const char *source,
             usize line_start, const char *message);
+void report_runtime(usize line_idx, usize col_idx, const char *source_filename, const char *source,
+                    usize line_start, const char *message);
 void report_unexpected_token(context_t *ctx, token_t tok, const char *expected);
 void report_missing_expression(context_t *ctx, token_t tok, const char *error_msg);
 void run(context_t *ctx);
@@ -212,8 +232,22 @@ void synchronize(parser_t *parser);
 const char *intern(context_t *ctx, const char *s);
 const char *intern_token_lexeme(context_t *ctx, parser_t *parser);
 void consume_terminator(parser_t *parser, const char *message);
+bool is_truthy(value_t value);
+bool is_equal(value_t a, value_t b);
+const char *stringify_value(context_t *ctx, value_t value);
+bool interpret_comparison(token_type_t op, value_t a, value_t b);
+value_t interpret_binary(context_t *ctx, ast_node_t *node);
+value_t interpret_unary(context_t *ctx, ast_node_t *node);
+value_t interpret_ternary(context_t *ctx, ast_node_t *node);
+value_t interpret(context_t *ctx, ast_node_t *node);
+value_t create_value(value_type_t type, value_data_t value);
+value_t create_error_value();
+bool check_number_operand(context_t *ctx, token_t tok, value_t child);
+bool check_number_operands(context_t *ctx, token_t tok, value_t left, value_t right);
+bool check_same_operands(context_t *ctx, token_t tok, value_t left, value_t right);
 
 static bool had_error = false;
+static bool had_runtime_error = false;
 
 void print_token_type(token_type_t type)
 {
@@ -303,7 +337,7 @@ void print_ast(ast_node_t *node, usize indent)
         break;
     case NODE_UNARY:
         printf("(unary ");
-        print_token_type(node->value.unary.op);
+        print_token_type(node->value.unary.op.type);
         printf("\n");
         print_ast(node->value.unary.child, indent + 1);
         print_indent(indent);
@@ -311,7 +345,7 @@ void print_ast(ast_node_t *node, usize indent)
         break;
     case NODE_BINARY:
         printf("(binary ");
-        print_token_type(node->value.binary.op);
+        print_token_type(node->value.binary.op.type);
         printf("\n");
         print_ast(node->value.binary.left, indent + 1);
         print_ast(node->value.binary.right, indent + 1);
@@ -381,7 +415,10 @@ int main(int argc, char **argv)
     run(&ctx);
 
     if (had_error)
-        return 1;
+        return 65;
+
+    if (had_runtime_error)
+        return 70;
 
     return 0;
 }
@@ -393,12 +430,6 @@ void run(context_t *ctx)
 
     tokenize(ctx, &lexer);
 
-    for (usize i = 0; i < lexer.tokens.size; ++i) {
-        token_t tok = lexer.tokens.items[i];
-        LOG(LOG_INFO, "TOKEN = lexeme = %.*s, cursor = %zu, len = %zu", (int)tok.lexeme_len,
-            tok.lexeme, tok.cursor, tok.lexeme_len);
-    }
-
     parser_t parser = { 0 };
     parser.tokens = lexer.tokens.items;
     parser.tokens_size = lexer.tokens.size;
@@ -407,7 +438,31 @@ void run(context_t *ctx)
     if (had_error)
         return;
 
-    print_ast(parser.root, 0);
+    for (usize i = 0; i < parser.root->value.program.size; ++i) {
+        value_t value = interpret(ctx, parser.root->value.program.statements[i]);
+
+        switch (value.type) {
+        case VALUE_NUMBER: {
+            printf("%g\n", value.value.number);
+        } break;
+
+        case VALUE_BOOL: {
+            printf("%d\n", value.value.boolean);
+        } break;
+
+        case VALUE_STRING: {
+            printf("%s\n", value.value.string);
+        } break;
+
+        case VALUE_NIL: {
+            printf("nil\n");
+        } break;
+
+        default:
+            break;
+        }
+    }
+    // print_ast(parser.root, 0);
 }
 
 void parse(context_t *ctx, parser_t *parser)
@@ -447,7 +502,7 @@ ast_node_t *parse_statement(context_t *ctx, parser_t *parser)
                 return NULL;
 
             node_value_t node_value = {
-                .binary = { .op = op.type, .left = left, .right = right },
+                .binary = { .op = op, .left = left, .right = right },
             };
             left = create_node(ctx->arena, NODE_BINARY, node_value, left->start, right->start);
         }
@@ -537,7 +592,7 @@ ast_node_t *parse_logical_or(context_t *ctx, parser_t *parser)
             return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
         }
 
-        node_value_t value = { .binary = { .left = left, .op = op.type, .right = right } };
+        node_value_t value = { .binary = { .left = left, .op = op, .right = right } };
         left = create_node(ctx->arena, NODE_BINARY, value, left->start, right->end);
     }
 
@@ -569,7 +624,7 @@ ast_node_t *parse_logical_and(context_t *ctx, parser_t *parser)
             return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
         }
 
-        node_value_t value = { .binary = { .left = left, .op = op.type, .right = right } };
+        node_value_t value = { .binary = { .left = left, .op = op, .right = right } };
         left = create_node(ctx->arena, NODE_BINARY, value, left->start, right->end);
     }
 
@@ -601,7 +656,7 @@ ast_node_t *parse_equality(context_t *ctx, parser_t *parser)
             return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
         }
 
-        node_value_t value = { .binary = { .left = left, .op = op.type, .right = right } };
+        node_value_t value = { .binary = { .left = left, .op = op, .right = right } };
         left = create_node(ctx->arena, NODE_BINARY, value, left->start, right->end);
     }
 
@@ -634,7 +689,7 @@ ast_node_t *parse_comparison(context_t *ctx, parser_t *parser)
             return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
         }
 
-        node_value_t value = { .binary = { .left = left, .op = op.type, .right = right } };
+        node_value_t value = { .binary = { .left = left, .op = op, .right = right } };
         left = create_node(ctx->arena, NODE_BINARY, value, left->start, right->end);
     }
 
@@ -666,7 +721,7 @@ ast_node_t *parse_term(context_t *ctx, parser_t *parser)
             return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
         }
 
-        node_value_t value = { .binary = { .left = left, .op = op.type, .right = right } };
+        node_value_t value = { .binary = { .left = left, .op = op, .right = right } };
         left = create_node(ctx->arena, NODE_BINARY, value, left->start, right->end);
     }
 
@@ -698,7 +753,7 @@ ast_node_t *parse_factor(context_t *ctx, parser_t *parser)
             return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
         }
 
-        node_value_t value = { .binary = { .left = left, .op = op.type, .right = right } };
+        node_value_t value = { .binary = { .left = left, .op = op, .right = right } };
         left = create_node(ctx->arena, NODE_BINARY, value, left->start, right->end);
     }
 
@@ -710,7 +765,9 @@ ast_node_t *parse_unary(context_t *ctx, parser_t *parser)
     token_t tok = peek_parser(parser);
 
     switch (tok.type) {
-    case PLUS: {
+    case PLUS:
+    case MINUS:
+    case BANG: {
         advance_parser(parser);
         ast_node_t *node = parse_primary(ctx, parser);
         if (!node) {
@@ -718,21 +775,33 @@ ast_node_t *parse_unary(context_t *ctx, parser_t *parser)
             return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
         }
 
-        node_value_t value = { .unary = { .op = tok.type, .child = node } };
+        node_value_t value = { .unary = { .op = tok, .child = node } };
         return create_node(ctx->arena, NODE_UNARY, value, node->start, node->end);
     };
 
-    case MINUS: {
-        advance_parser(parser);
-        ast_node_t *node = parse_primary(ctx, parser);
-        if (!node) {
-            report_missing_expression(ctx, tok, "Unary operator must have an operand");
-            return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
-        }
-
-        node_value_t value = { .unary = { .op = tok.type, .child = node } };
-        return create_node(ctx->arena, NODE_UNARY, value, node->start, node->end);
-    };
+        // case MINUS: {
+        //     advance_parser(parser);
+        //     ast_node_t *node = parse_primary(ctx, parser);
+        //     if (!node) {
+        //         report_missing_expression(ctx, tok, "Unary operator must have an operand");
+        //         return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
+        //     }
+        //
+        //     node_value_t value = { .unary = { .op = tok.type, .child = node } };
+        //     return create_node(ctx->arena, NODE_UNARY, value, node->start, node->end);
+        // };
+        //
+        // case BANG: {
+        //     advance_parser(parser);
+        //     ast_node_t *node = parse_primary(ctx, parser);
+        //     if (!node) {
+        //         report_missing_expression(ctx, tok, "Unary operator must have an operand");
+        //         return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
+        //     }
+        //
+        //     node_value_t value = { .unary = { .op = tok.type, .child = node } };
+        //     return create_node(ctx->arena, NODE_UNARY, value, node->start, node->end);
+        // };
 
     default:
         break;
@@ -845,10 +914,10 @@ ast_node_t *parse_string(context_t *ctx, parser_t *parser)
         return NULL;
     }
 
-    char tmp[tok.lexeme_len];
+    char tmp[tok.lexeme_len - 2];
     // remove quotes
     memcpy(tmp, tok.lexeme + 1, tok.lexeme_len - 1);
-    tmp[tok.lexeme_len] = '\0';
+    tmp[tok.lexeme_len - 1] = '\0';
 
     const char *value = intern(ctx, tmp);
     if (!value)
@@ -1204,6 +1273,26 @@ void report(usize line_idx, usize col_idx, const char *source_filename, const ch
     had_error = true;
 }
 
+void report_runtime(usize line_idx, usize col_idx, const char *source_filename, const char *source,
+                    usize line_start, const char *message)
+{
+    usize col = col_idx + 1;
+    usize line = line_idx + 1;
+
+    const char *line_end = source + line_start;
+    while (*line_end && *line_end != '\n') {
+        line_end++;
+    }
+
+    isize text_len = line_end - (source + line_start);
+
+    fprintf(stderr, "%s:%zu:%zu: %s\n", source_filename, line, col, message);
+    fprintf(stderr, "%4zu | %.*s\n", line, (int)text_len, source + line_start);
+    fprintf(stderr, "     | %*s\n", (int)col, "^");
+
+    had_runtime_error = true;
+}
+
 void report_unexpected_token(context_t *ctx, token_t tok, const char *expected)
 {
     char error_msg[256];
@@ -1214,6 +1303,8 @@ void report_unexpected_token(context_t *ctx, token_t tok, const char *expected)
 
     report(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source, tok.line_start, error_msg);
 }
+
+char x[] = "1234";
 
 void report_missing_expression(context_t *ctx, token_t tok, const char *error_msg)
 {
@@ -1362,4 +1453,333 @@ const char *intern(context_t *ctx, const char *s)
 bool parser_is_eof(parser_t *parser)
 {
     return peek_parser(parser).type == END_OF_FILE;
+}
+
+bool is_truthy(value_t value)
+{
+    switch (value.type) {
+    case VALUE_NUMBER:
+        return value.value.number != 0;
+
+    case VALUE_STRING:
+        return strcmp(value.value.string, "");
+
+    case VALUE_BOOL:
+        return value.value.boolean;
+
+    default:
+        return false;
+    }
+}
+
+bool is_equal(value_t a, value_t b)
+{
+    switch (a.type) {
+    case VALUE_NUMBER: {
+        if (b.type != VALUE_NUMBER)
+            return false;
+
+        return a.value.number == b.value.number;
+    }
+
+    case VALUE_STRING: {
+        if (b.type != VALUE_STRING)
+            return false;
+
+        return strcmp(a.value.string, b.value.string) == 0;
+    }
+
+    case VALUE_BOOL:
+        if (b.type != VALUE_BOOL)
+            return false;
+
+        return a.value.boolean == b.value.boolean;
+
+    default:
+        return false;
+    }
+}
+
+const char *stringify_value(context_t *ctx, value_t value)
+{
+    switch (value.type) {
+    case VALUE_BOOL:
+        return value.value.boolean ? "true" : "false";
+    case VALUE_NUMBER:
+        return number_to_string(ctx->arena, value.value.number);
+    case VALUE_NIL:
+        return "nil";
+    case VALUE_ERROR:
+        return "";
+    case VALUE_STRING:
+        return value.value.string;
+    }
+}
+
+bool interpret_comparison(token_type_t op, value_t a, value_t b)
+{
+    assert(a.type == b.type);
+
+    switch (a.type) {
+    case VALUE_NUMBER: {
+        double x = a.value.number;
+        double y = b.value.number;
+
+        switch (op) {
+        case LESS:
+            return x < y;
+        case LESS_EQUAL:
+            return x <= y;
+        case GREATER:
+            return x > y;
+        case GREATER_EQUAL:
+            return x >= y;
+        default:
+            return false;
+        }
+    }
+
+    case VALUE_STRING: {
+        int cmp = strcmp(a.value.string, b.value.string);
+
+        switch (op) {
+        case LESS:
+            return cmp < 0;
+        case LESS_EQUAL:
+            return cmp <= 0;
+        case GREATER:
+            return cmp > 0;
+        case GREATER_EQUAL:
+            return cmp >= 0;
+        default:
+            return false;
+        }
+    }
+
+    case VALUE_BOOL: {
+        int x = a.value.boolean;
+        int y = b.value.boolean;
+
+        switch (op) {
+        case LESS:
+            return x < y;
+        case LESS_EQUAL:
+            return x <= y;
+        case GREATER:
+            return x > y;
+        case GREATER_EQUAL:
+            return x >= y;
+        default:
+            return false;
+        }
+    }
+
+    default:
+        return false;
+    }
+}
+
+value_t interpret_binary(context_t *ctx, ast_node_t *node)
+{
+    assert(node->type == NODE_BINARY);
+
+    value_t left = interpret(ctx, node->value.binary.left);
+    value_t right = interpret(ctx, node->value.binary.right);
+
+    switch (node->value.binary.op.type) {
+    case OR: {
+        return create_value(VALUE_BOOL,
+                            (value_data_t){ .boolean = is_truthy(left) || is_truthy(right) });
+    }
+
+    case AND: {
+        return create_value(VALUE_BOOL,
+                            (value_data_t){ .boolean = is_truthy(left) && is_truthy(right) });
+    }
+
+    case EQUAL_EQUAL: {
+        return create_value(VALUE_BOOL, (value_data_t){ .boolean = is_equal(left, right) });
+    }
+
+    case BANG_EQUAL: {
+        return create_value(VALUE_BOOL, (value_data_t){ .boolean = !is_equal(left, right) });
+    }
+
+    case LESS:
+    case LESS_EQUAL:
+    case GREATER:
+    case GREATER_EQUAL: {
+        if (!check_number_operands(ctx, node->value.binary.op, left, right))
+            return create_error_value();
+
+        return create_value(
+            VALUE_BOOL, (value_data_t){ .boolean = interpret_comparison(node->value.binary.op.type,
+                                                                        left, right) });
+    }
+
+    case PLUS: {
+        if (left.type == VALUE_STRING || right.type == VALUE_STRING) {
+            const char *left_str = stringify_value(ctx, left);
+            const char *right_str = stringify_value(ctx, right);
+
+            return create_value(VALUE_STRING,
+                                (value_data_t){
+                                    .string = concat_str(ctx->arena, left_str, right_str),
+                                });
+        }
+
+        if (!check_number_operands(ctx, node->value.binary.op, left, right))
+            return create_error_value();
+
+        return create_value(VALUE_NUMBER,
+                            (value_data_t){ .number = left.value.number + right.value.number });
+    }
+    case MINUS: {
+        if (!check_number_operands(ctx, node->value.binary.op, left, right))
+            return create_error_value();
+
+        return create_value(VALUE_NUMBER,
+                            (value_data_t){ .number = left.value.number - right.value.number });
+    }
+
+    case STAR: {
+        if (!check_number_operands(ctx, node->value.binary.op, left, right))
+            return create_error_value();
+
+        return create_value(VALUE_NUMBER,
+                            (value_data_t){ .number = left.value.number * right.value.number });
+    }
+
+    case SLASH: {
+        if (!check_number_operands(ctx, node->value.binary.op, left, right))
+            return create_error_value();
+
+        if (right.value.number == 0.0) {
+            token_t tok = node->value.binary.op;
+            report_runtime(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source,
+                           tok.line_start, "Division by zero.");
+            return create_error_value();
+        }
+
+        return create_value(VALUE_NUMBER,
+                            (value_data_t){ .number = left.value.number / right.value.number });
+    }
+
+    default: {
+        __builtin_unreachable();
+    }
+    }
+}
+
+value_t interpret_unary(context_t *ctx, ast_node_t *node)
+{
+    switch (node->value.unary.op.type) {
+    case BANG: {
+        return create_value(
+            VALUE_BOOL,
+            (value_data_t){ .boolean = !is_truthy(interpret(ctx, node->value.unary.child)) });
+    }
+
+    case MINUS: {
+        value_t child = interpret(ctx, node->value.unary.child);
+        if (!check_number_operand(ctx, node->value.unary.op, child))
+            return create_error_value();
+
+        return create_value(VALUE_NUMBER, (value_data_t){ .number = -child.value.number });
+    }
+
+    case PLUS: {
+        value_t child = interpret(ctx, node->value.unary.child);
+        if (!check_number_operand(ctx, node->value.unary.op, child))
+            return create_error_value();
+
+        return create_value(VALUE_NUMBER, (value_data_t){ .number = +child.value.number });
+    }
+
+    default: {
+        __builtin_unreachable();
+    }
+    }
+}
+
+value_t interpret_ternary(context_t *ctx, ast_node_t *node)
+{
+    value_t condition = interpret(ctx, node->value.ternary.condition);
+    value_t true_branch = interpret(ctx, node->value.ternary.true_branch);
+    value_t false_branch = interpret(ctx, node->value.ternary.false_branch);
+
+    return condition.value.boolean ? true_branch : false_branch;
+}
+
+value_t interpret(context_t *ctx, ast_node_t *node)
+{
+    switch (node->type) {
+    case NODE_NUMBER:
+        return create_value(VALUE_NUMBER, (value_data_t){ .number = node->value.literal.number });
+
+    case NODE_STRING:
+        return create_value(VALUE_STRING, (value_data_t){ .string = node->value.literal.string });
+
+    case NODE_BOOL:
+        return create_value(VALUE_BOOL, (value_data_t){ .boolean = node->value.literal.boolean });
+
+    case NODE_NIL:
+        return create_value(VALUE_NIL, (value_data_t){});
+
+    case NODE_BINARY:
+        return interpret_binary(ctx, node);
+
+    case NODE_UNARY:
+        return interpret_unary(ctx, node);
+
+    case NODE_TERNARY:
+        return interpret_ternary(ctx, node);
+
+    default: {
+        __builtin_unreachable();
+    }
+    }
+}
+
+value_t create_value(value_type_t type, value_data_t value)
+{
+    return (value_t){ .type = type, .value = value };
+}
+
+value_t create_error_value()
+{
+    return (value_t){ .type = VALUE_ERROR };
+}
+
+bool check_number_operand(context_t *ctx, token_t tok, value_t child)
+{
+    if (child.type == VALUE_NUMBER)
+        return true;
+
+    report_runtime(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source, tok.line_start,
+                   "Operand must be a number.");
+
+    return false;
+}
+
+bool check_number_operands(context_t *ctx, token_t tok, value_t left, value_t right)
+{
+    if (left.type == VALUE_NUMBER && right.type == VALUE_NUMBER)
+        return true;
+
+    report_runtime(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source, tok.line_start,
+                   "Operands must be numbers.");
+
+    return false;
+}
+
+bool check_same_operands(context_t *ctx, token_t tok, value_t left, value_t right)
+{
+    if (left.type == right.type)
+        return true;
+
+    report_runtime(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source, tok.line_start,
+                   "Operands must be of same type.");
+
+    return false;
 }
