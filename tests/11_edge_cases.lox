@@ -1,0 +1,18 @@
+// Test edge cases
+
+0;
+-0;
+0.0;
+-0.0;
+
+1 + 0;
+0 + 1;
+1 * 0;
+0 * 1;
+
+1 / 1;
+-1 / 1;
+1 / -1;
+
+true and true and true;
+false or false or true;

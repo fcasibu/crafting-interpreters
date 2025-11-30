@@ -1,0 +1,13 @@
+// Test unary operators
+
+-5;
+-(-3);
++10;
++(-5);
+
+!true;
+!false;
+
+-1.5;
++2.5;
+
