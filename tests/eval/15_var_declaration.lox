@@ -1,0 +1,8 @@
+var hello = "Hello, World!";
+print hello;
+
+var num = 1 + 2;
+print num;
+
+var bool = false;
+print bool;

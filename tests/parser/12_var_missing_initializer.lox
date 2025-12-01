@@ -1,0 +1,2 @@
+// Missing initializer expression after '='
+var foo = ;

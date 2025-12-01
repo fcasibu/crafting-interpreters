@@ -1,0 +1,2 @@
+// Missing semicolon after variable declaration
+var bar = 1
