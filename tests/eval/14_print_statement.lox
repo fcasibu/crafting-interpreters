@@ -1,0 +1,11 @@
+// print statements
+
+print "Hello, World!";
+print 123;
+print 456.789;
+print true;
+print false;
+print nil;
+print 1 + 2 * 3;
+print "Hello" + " " + "World";
+print true ? false or false ? 1 : true and true ? 2 : 3 : 4;

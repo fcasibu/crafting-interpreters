@@ -1,0 +1,3 @@
+// invalid print statement
+
+print print; // expected expression

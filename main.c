@@ -40,7 +40,7 @@ typedef enum {
 typedef enum {
     // clang-format off
     NODE_NUMBER, NODE_STRING, NODE_BOOL, NODE_NIL, NODE_UNARY, NODE_BINARY,
-    NODE_PROGRAM, NODE_IDENTIFIER, NODE_TERNARY, NODE_NOTHING
+    NODE_PROGRAM, NODE_IDENTIFIER, NODE_TERNARY, NODE_PRINT, NODE_NOTHING
     // clang-format on
 } node_type_t;
 
@@ -113,6 +113,10 @@ typedef union {
         struct ast_node *true_branch;
         struct ast_node *false_branch;
     } ternary;
+
+    struct {
+        struct ast_node *expression;
+    } print_stmt;
 
     struct {
         struct ast_node **statements;
@@ -192,6 +196,7 @@ void run(context_t *ctx);
 void tokenize(context_t *ctx, lexer_t *lexer);
 void parse(context_t *ctx, parser_t *parser);
 ast_node_t *parse_statement(context_t *ctx, parser_t *parser);
+ast_node_t *parse_print_stmt(context_t *ctx, parser_t *parser);
 ast_node_t *parse_expression(context_t *ctx, parser_t *parser);
 ast_node_t *parse_ternary(context_t *ctx, parser_t *parser);
 ast_node_t *parse_logical_or(context_t *ctx, parser_t *parser);
@@ -360,6 +365,10 @@ void print_ast(ast_node_t *node, usize indent)
         print_indent(indent);
         printf(")\n");
         break;
+    case NODE_PRINT:
+        printf("(print)\n");
+        print_ast(node->value.print_stmt.expression, indent + 1);
+        break;
     case NODE_PROGRAM:
         printf("(program\n");
         for (usize i = 0; i < node->value.program.size; i++)
@@ -476,6 +485,8 @@ void parse(context_t *ctx, parser_t *parser)
         if (!node)
             continue;
 
+        consume(ctx, parser, SEMICOLON, "Expected semicolon");
+
         arena_da_append(ctx->arena, &prog_stmts, node);
     }
 
@@ -490,6 +501,10 @@ ast_node_t *parse_statement(context_t *ctx, parser_t *parser)
     token_t tok = peek_parser(parser);
 
     switch (tok.type) {
+    case PRINT: {
+        return parse_print_stmt(ctx, parser);
+    }
+
     default: {
         ast_node_t *left = parse_expression(ctx, parser);
 
@@ -507,11 +522,25 @@ ast_node_t *parse_statement(context_t *ctx, parser_t *parser)
             left = create_node(ctx->arena, NODE_BINARY, node_value, left->start, right->start);
         }
 
-        consume(ctx, parser, SEMICOLON, "Expected semicolon");
-
         return left;
     }
     }
+}
+
+ast_node_t *parse_print_stmt(context_t *ctx, parser_t *parser)
+{
+    token_t tok = advance_parser(parser);
+    assert(tok.type == PRINT);
+
+    ast_node_t *expression = parse_expression(ctx, parser);
+
+    if (!expression) {
+        report_unexpected_token(ctx, tok, "expression");
+        synchronize(parser);
+        return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
+    }
+
+    return expression;
 }
 
 ast_node_t *parse_expression(context_t *ctx, parser_t *parser)
@@ -1759,6 +1788,10 @@ value_t interpret(context_t *ctx, ast_node_t *node)
 
     case NODE_TERNARY:
         return interpret_ternary(ctx, node);
+
+    case NODE_PRINT: {
+        return interpret(ctx, node->value.print_stmt.expression);
+    }
 
     default: {
         __builtin_unreachable();
