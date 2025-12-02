@@ -41,7 +41,7 @@ typedef enum {
     // clang-format off
     NODE_NUMBER, NODE_STRING, NODE_BOOL, NODE_NIL, NODE_UNARY, NODE_BINARY,
     NODE_PROGRAM, NODE_IDENTIFIER, NODE_TERNARY, NODE_PRINT, NODE_VAR,
-    NODE_NOTHING
+    NODE_ASSIGN, NODE_NOTHING
     // clang-format on
 } node_type_t;
 
@@ -124,6 +124,11 @@ typedef union {
         struct ast_node *identifier;
         struct ast_node *expression;
     } var_decl;
+
+    struct {
+        struct ast_node *identifier;
+        struct ast_node *expression;
+    } assign;
 
     struct {
         struct ast_node **declarations;
@@ -218,6 +223,7 @@ ast_node_t *parse_var_declaration(context_t *ctx, parser_t *parser);
 ast_node_t *parse_statement(context_t *ctx, parser_t *parser);
 ast_node_t *parse_print_stmt(context_t *ctx, parser_t *parser);
 ast_node_t *parse_expression(context_t *ctx, parser_t *parser);
+ast_node_t *parse_assignment(context_t *ctx, parser_t *parser);
 ast_node_t *parse_ternary(context_t *ctx, parser_t *parser);
 ast_node_t *parse_logical_or(context_t *ctx, parser_t *parser);
 ast_node_t *parse_logical_and(context_t *ctx, parser_t *parser);
@@ -632,7 +638,42 @@ ast_node_t *parse_print_stmt(context_t *ctx, parser_t *parser)
 
 ast_node_t *parse_expression(context_t *ctx, parser_t *parser)
 {
-    return parse_ternary(ctx, parser);
+    return parse_assignment(ctx, parser);
+}
+
+ast_node_t *parse_assignment(context_t *ctx, parser_t *parser)
+{
+    if (peek_parser(parser).type == END_OF_FILE)
+        return NULL;
+
+    ast_node_t *left = parse_ternary(ctx, parser);
+
+    if (!left)
+        return NULL;
+
+    if (match_parser(parser, 1, EQUAL)) {
+        if (left->type != NODE_IDENTIFIER) {
+            report_missing_expression(ctx, previous_parser(parser), "Invalid assignment target.");
+            synchronize(parser);
+            return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
+        }
+
+        assert(advance_parser(parser).type == EQUAL);
+        ast_node_t *right = parse_assignment(ctx, parser);
+
+        if (!right) {
+            report_missing_expression(ctx, previous_parser(parser),
+                                      "Expected expression after '='");
+            synchronize(parser);
+            return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
+        }
+
+        return create_node(ctx->arena, NODE_ASSIGN,
+                           (node_value_t){ .assign.identifier = left, .assign.expression = right },
+                           left->start, right->end);
+    }
+
+    return left;
 }
 
 ast_node_t *parse_ternary(context_t *ctx, parser_t *parser)
@@ -654,7 +695,7 @@ ast_node_t *parse_ternary(context_t *ctx, parser_t *parser)
 
     advance_parser(parser);
 
-    ast_node_t *true_branch = parse_ternary(ctx, parser);
+    ast_node_t *true_branch = parse_expression(ctx, parser);
     if (!true_branch) {
         report_unexpected_token(ctx, previous_parser(parser), "expression");
         synchronize(parser);
@@ -1935,8 +1976,25 @@ value_t interpret(context_t *ctx, ast_node_t *node)
         return create_nothing_value();
     }
     case NODE_VAR: {
-        set_var_entry(ctx->arena, node->value.var_decl.identifier->value.identifier.name,
-                      interpret(ctx, node->value.var_decl.expression));
+        if (set_var_entry(ctx->arena, node->value.var_decl.identifier->value.identifier.name,
+                          interpret(ctx, node->value.var_decl.expression)) != 0)
+            return create_error_value();
+
+        return create_nothing_value();
+    }
+    case NODE_ASSIGN: {
+        const char *var_name = node->value.assign.identifier->value.identifier.name;
+        value_t *value = get_var_entry(var_name);
+
+        if (!value) {
+            // TODO(fcasibu): caller location
+            report_runtime(0, 0, ctx->source_filename, ctx->source, 0, "Undefined variable");
+            return create_error_value();
+        }
+
+        if (set_var_entry(ctx->arena, var_name, interpret(ctx, node->value.assign.expression)) != 0)
+            return create_error_value();
+
         return create_nothing_value();
     }
     default: {
@@ -1957,6 +2015,7 @@ value_t create_nothing_value()
 
 value_t create_error_value()
 {
+    // TODO(fcasibu): do something with this error value
     return (value_t){ .type = VALUE_ERROR };
 }
 
