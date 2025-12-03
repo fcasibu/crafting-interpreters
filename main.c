@@ -198,7 +198,7 @@ typedef struct {
 // TODO(fcasibu): hashmap
 typedef struct var_pool_entry {
     const char *str;
-    value_t *value;
+    value_t value;
     struct var_pool_entry *next;
 } var_pool_entry_t;
 
@@ -293,8 +293,8 @@ bool check_number_operand(context_t *ctx, token_t tok, value_t child);
 bool check_number_operands(context_t *ctx, token_t tok, value_t left, value_t right);
 bool check_same_operands(context_t *ctx, token_t tok, value_t left, value_t right);
 err set_var_entry(arena_t *arena, var_pool_t *pool, const char *s, value_t value);
-value_t *get_var_entry(var_pool_t *pool, const char *s);
-value_t *get_var_in_scope(environment_t *env, const char *s);
+var_pool_entry_t *get_var_entry(var_pool_t *pool, const char *s);
+var_pool_entry_t *get_var_in_scope(environment_t *env, const char *s);
 err set_var_in_scope(arena_t *arena, environment_t *env, const char *s, value_t value);
 environment_t *create_env(arena_t *arena, environment_t *parent);
 
@@ -1682,41 +1682,34 @@ err set_var_entry(arena_t *arena, var_pool_t *pool, const char *s, value_t value
     if (!entry->str)
         return 1;
 
-    value_t *val = arena_alloc(arena, sizeof(*val));
-    if (!val)
-        return 1;
-
-    *val = value;
-    entry->value = val;
-
+    entry->value = value;
     entry->next = pool->head;
     pool->head = entry;
 
     return 0;
 }
 
-value_t *get_var_entry(var_pool_t *pool, const char *s)
+var_pool_entry_t *get_var_entry(var_pool_t *pool, const char *s)
 {
     var_pool_entry_t *current = pool->head;
 
     while (current) {
         if (strcmp(current->str, s) == 0)
-            return current->value;
+            return current;
         current = current->next;
     }
 
     return NULL;
 }
 
-value_t *get_var_in_scope(environment_t *env, const char *s)
+var_pool_entry_t *get_var_in_scope(environment_t *env, const char *s)
 {
     environment_t *current = env;
 
     while (current) {
-        value_t *value = get_var_entry(&current->pool, s);
-        if (value) {
-            return value;
-        }
+        var_pool_entry_t *var_entry = get_var_entry(&current->pool, s);
+        if (var_entry)
+            return var_entry;
 
         current = current->parent_env;
     }
@@ -1729,8 +1722,13 @@ err set_var_in_scope(arena_t *arena, environment_t *env, const char *s, value_t 
     environment_t *current = env;
 
     while (current) {
-        if (get_var_entry(&current->pool, s))
-            return set_var_entry(arena, &current->pool, s, value);
+        var_pool_entry_t *var_entry = get_var_entry(&current->pool, s);
+
+        if (var_entry) {
+            var_entry->value = value;
+
+            return 0;
+        }
 
         current = current->parent_env;
     }
@@ -2044,14 +2042,14 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         return create_value(VALUE_NIL, (value_data_t){});
 
     case NODE_IDENTIFIER: {
-        value_t *value = get_var_in_scope(env, node->value.identifier.name);
-        if (!value) {
+        var_pool_entry_t *entry = get_var_in_scope(env, node->value.identifier.name);
+        if (!entry) {
             // TODO(fcasibu): caller location
             report_runtime(0, 0, ctx->source_filename, ctx->source, 0, "Undefined variable");
             return create_error_value();
         }
 
-        return *value;
+        return entry->value;
     }
 
     case NODE_NOTHING:
@@ -2081,9 +2079,9 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     }
     case NODE_ASSIGN: {
         const char *var_name = node->value.assign.identifier->value.identifier.name;
-        value_t *value = get_var_in_scope(env, var_name);
+        var_pool_entry_t *var_entry = get_var_in_scope(env, var_name);
 
-        if (!value) {
+        if (!var_entry) {
             // TODO(fcasibu): caller location
             report_runtime(0, 0, ctx->source_filename, ctx->source, 0, "Undefined variable");
             return create_error_value();
