@@ -206,6 +206,14 @@ typedef struct {
     var_pool_entry_t *head;
 } var_pool_t;
 
+typedef struct environment {
+    var_pool_t pool;
+    struct environment **items;
+    usize size;
+    usize capacity;
+    struct environment *parent_env;
+} environment_t;
+
 typedef struct {
     arena_t *arena;
     string_pool_t string_pool;
@@ -221,7 +229,7 @@ void report_runtime(usize line_idx, usize col_idx, const char *source_filename, 
 void report_unexpected_token(context_t *ctx, token_t tok, const char *expected);
 void report_missing_expression(context_t *ctx, token_t tok, const char *error_msg);
 void run(context_t *ctx);
-void run_declarations(context_t *ctx, ast_node_t **declarations, usize size);
+void run_declarations(context_t *ctx, ast_node_t **declarations, usize size, environment_t *env);
 void tokenize(context_t *ctx, lexer_t *lexer);
 void parse(context_t *ctx, parser_t *parser);
 ast_node_t *parse_declaration(context_t *ctx, parser_t *parser);
@@ -274,23 +282,25 @@ bool is_truthy(value_t value);
 bool is_equal(value_t a, value_t b);
 const char *stringify_value(arena_t *arena, value_t value);
 bool interpret_comparison(token_type_t op, value_t a, value_t b);
-value_t interpret_binary(context_t *ctx, ast_node_t *node);
-value_t interpret_unary(context_t *ctx, ast_node_t *node);
-value_t interpret_ternary(context_t *ctx, ast_node_t *node);
-value_t interpret(context_t *ctx, ast_node_t *node);
+value_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *env);
+value_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *env);
+value_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *env);
+value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env);
 value_t create_value(value_type_t type, value_data_t value);
 value_t create_nothing_value();
 value_t create_error_value();
 bool check_number_operand(context_t *ctx, token_t tok, value_t child);
 bool check_number_operands(context_t *ctx, token_t tok, value_t left, value_t right);
 bool check_same_operands(context_t *ctx, token_t tok, value_t left, value_t right);
-err set_var_entry(arena_t *arena, const char *s, value_t value);
-value_t *get_var_entry(const char *s);
+err set_var_entry(arena_t *arena, var_pool_t *pool, const char *s, value_t value);
+value_t *get_var_entry(var_pool_t *pool, const char *s);
+value_t *get_var_in_scope(environment_t *env, const char *s);
+err set_var_in_scope(arena_t *arena, environment_t *env, const char *s, value_t value);
+environment_t *create_env(arena_t *arena, environment_t *parent);
 
 static bool had_error = false;
 static bool had_runtime_error = false;
 
-var_pool_t var_pool = { 0 };
 string_pool_t string_pool = { 0 };
 
 void print_token_type(token_type_t type)
@@ -483,15 +493,17 @@ void run(context_t *ctx)
     if (had_error)
         return;
 
-    run_declarations(ctx, parser.root->value.program.declarations, parser.root->value.program.size);
+    environment_t *global_env = create_env(ctx->arena, NULL);
+    run_declarations(ctx, parser.root->value.program.declarations, parser.root->value.program.size,
+                     global_env);
 
     // print_ast(parser.root, 0);
 }
 
-void run_declarations(context_t *ctx, ast_node_t **declarations, usize size)
+void run_declarations(context_t *ctx, ast_node_t **declarations, usize size, environment_t *env)
 {
     for (usize i = 0; i < size; ++i) {
-        value_t value = interpret(ctx, declarations[i]);
+        value_t value = interpret(ctx, declarations[i], env);
 
         switch (value.type) {
         case VALUE_NUMBER: {
@@ -1657,8 +1669,11 @@ const char *intern(arena_t *arena, const char *s)
     return entry->str;
 }
 
-err set_var_entry(arena_t *arena, const char *s, value_t value)
+err set_var_entry(arena_t *arena, var_pool_t *pool, const char *s, value_t value)
 {
+    if (!pool)
+        return 1;
+
     var_pool_entry_t *entry = arena_alloc(arena, sizeof(*entry));
     if (!entry)
         return 1;
@@ -1674,15 +1689,15 @@ err set_var_entry(arena_t *arena, const char *s, value_t value)
     *val = value;
     entry->value = val;
 
-    entry->next = var_pool.head;
-    var_pool.head = entry;
+    entry->next = pool->head;
+    pool->head = entry;
 
     return 0;
 }
 
-value_t *get_var_entry(const char *s)
+value_t *get_var_entry(var_pool_t *pool, const char *s)
 {
-    var_pool_entry_t *current = var_pool.head;
+    var_pool_entry_t *current = pool->head;
 
     while (current) {
         if (strcmp(current->str, s) == 0)
@@ -1691,6 +1706,36 @@ value_t *get_var_entry(const char *s)
     }
 
     return NULL;
+}
+
+value_t *get_var_in_scope(environment_t *env, const char *s)
+{
+    environment_t *current = env;
+
+    while (current) {
+        value_t *value = get_var_entry(&current->pool, s);
+        if (value) {
+            return value;
+        }
+
+        current = current->parent_env;
+    }
+
+    return NULL;
+}
+
+err set_var_in_scope(arena_t *arena, environment_t *env, const char *s, value_t value)
+{
+    environment_t *current = env;
+
+    while (current) {
+        if (get_var_entry(&current->pool, s))
+            return set_var_entry(arena, &current->pool, s, value);
+
+        current = current->parent_env;
+    }
+
+    return set_var_entry(arena, &env->pool, s, value);
 }
 
 bool parser_is_eof(parser_t *parser)
@@ -1824,7 +1869,7 @@ bool interpret_comparison(token_type_t op, value_t a, value_t b)
     }
 }
 
-value_t interpret_binary(context_t *ctx, ast_node_t *node)
+value_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *env)
 {
     assert(node->type == NODE_BINARY);
 
@@ -1832,27 +1877,27 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
     case OR: {
         return create_value(
             VALUE_BOOL,
-            (value_data_t){ .boolean = is_truthy(interpret(ctx, node->value.binary.left)) ||
-                                       is_truthy(interpret(ctx, node->value.binary.right)) });
+            (value_data_t){ .boolean = is_truthy(interpret(ctx, node->value.binary.left, env)) ||
+                                       is_truthy(interpret(ctx, node->value.binary.right, env)) });
     }
 
     case AND: {
         return create_value(
             VALUE_BOOL,
-            (value_data_t){ .boolean = is_truthy(interpret(ctx, node->value.binary.left)) &&
-                                       is_truthy(interpret(ctx, node->value.binary.right)) });
+            (value_data_t){ .boolean = is_truthy(interpret(ctx, node->value.binary.left, env)) &&
+                                       is_truthy(interpret(ctx, node->value.binary.right, env)) });
     }
 
     case EQUAL_EQUAL: {
-        value_t left = interpret(ctx, node->value.binary.left);
-        value_t right = interpret(ctx, node->value.binary.right);
+        value_t left = interpret(ctx, node->value.binary.left, env);
+        value_t right = interpret(ctx, node->value.binary.right, env);
 
         return create_value(VALUE_BOOL, (value_data_t){ .boolean = is_equal(left, right) });
     }
 
     case BANG_EQUAL: {
-        value_t left = interpret(ctx, node->value.binary.left);
-        value_t right = interpret(ctx, node->value.binary.right);
+        value_t left = interpret(ctx, node->value.binary.left, env);
+        value_t right = interpret(ctx, node->value.binary.right, env);
 
         return create_value(VALUE_BOOL, (value_data_t){ .boolean = !is_equal(left, right) });
     }
@@ -1861,8 +1906,8 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
     case LESS_EQUAL:
     case GREATER:
     case GREATER_EQUAL: {
-        value_t left = interpret(ctx, node->value.binary.left);
-        value_t right = interpret(ctx, node->value.binary.right);
+        value_t left = interpret(ctx, node->value.binary.left, env);
+        value_t right = interpret(ctx, node->value.binary.right, env);
 
         if (!check_number_operands(ctx, node->value.binary.op, left, right))
             return create_error_value();
@@ -1873,8 +1918,8 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
     }
 
     case PLUS: {
-        value_t left = interpret(ctx, node->value.binary.left);
-        value_t right = interpret(ctx, node->value.binary.right);
+        value_t left = interpret(ctx, node->value.binary.left, env);
+        value_t right = interpret(ctx, node->value.binary.right, env);
 
         if (left.type == VALUE_STRING || right.type == VALUE_STRING) {
             const char *left_str = stringify_value(ctx->arena, left);
@@ -1893,8 +1938,8 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
                             (value_data_t){ .number = left.value.number + right.value.number });
     }
     case MINUS: {
-        value_t left = interpret(ctx, node->value.binary.left);
-        value_t right = interpret(ctx, node->value.binary.right);
+        value_t left = interpret(ctx, node->value.binary.left, env);
+        value_t right = interpret(ctx, node->value.binary.right, env);
 
         if (!check_number_operands(ctx, node->value.binary.op, left, right))
             return create_error_value();
@@ -1904,8 +1949,8 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
     }
 
     case STAR: {
-        value_t left = interpret(ctx, node->value.binary.left);
-        value_t right = interpret(ctx, node->value.binary.right);
+        value_t left = interpret(ctx, node->value.binary.left, env);
+        value_t right = interpret(ctx, node->value.binary.right, env);
 
         if (!check_number_operands(ctx, node->value.binary.op, left, right))
             return create_error_value();
@@ -1915,8 +1960,8 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
     }
 
     case SLASH: {
-        value_t left = interpret(ctx, node->value.binary.left);
-        value_t right = interpret(ctx, node->value.binary.right);
+        value_t left = interpret(ctx, node->value.binary.left, env);
+        value_t right = interpret(ctx, node->value.binary.right, env);
 
         if (!check_number_operands(ctx, node->value.binary.op, left, right))
             return create_error_value();
@@ -1933,8 +1978,8 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
     }
 
     case COMMA: {
-        interpret(ctx, node->value.binary.left);
-        return interpret(ctx, node->value.binary.right);
+        interpret(ctx, node->value.binary.left, env);
+        return interpret(ctx, node->value.binary.right, env);
     }
 
     default: {
@@ -1943,17 +1988,17 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node)
     }
 }
 
-value_t interpret_unary(context_t *ctx, ast_node_t *node)
+value_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *env)
 {
     switch (node->value.unary.op.type) {
     case BANG: {
         return create_value(
             VALUE_BOOL,
-            (value_data_t){ .boolean = !is_truthy(interpret(ctx, node->value.unary.child)) });
+            (value_data_t){ .boolean = !is_truthy(interpret(ctx, node->value.unary.child, env)) });
     }
 
     case MINUS: {
-        value_t child = interpret(ctx, node->value.unary.child);
+        value_t child = interpret(ctx, node->value.unary.child, env);
         if (!check_number_operand(ctx, node->value.unary.op, child))
             return create_error_value();
 
@@ -1961,7 +2006,7 @@ value_t interpret_unary(context_t *ctx, ast_node_t *node)
     }
 
     case PLUS: {
-        value_t child = interpret(ctx, node->value.unary.child);
+        value_t child = interpret(ctx, node->value.unary.child, env);
         if (!check_number_operand(ctx, node->value.unary.op, child))
             return create_error_value();
 
@@ -1974,16 +2019,16 @@ value_t interpret_unary(context_t *ctx, ast_node_t *node)
     }
 }
 
-value_t interpret_ternary(context_t *ctx, ast_node_t *node)
+value_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *env)
 {
-    bool condition = is_truthy(interpret(ctx, node->value.ternary.condition));
+    bool condition = is_truthy(interpret(ctx, node->value.ternary.condition, env));
     if (condition)
-        return interpret(ctx, node->value.ternary.true_branch);
+        return interpret(ctx, node->value.ternary.true_branch, env);
 
-    return interpret(ctx, node->value.ternary.false_branch);
+    return interpret(ctx, node->value.ternary.false_branch, env);
 }
 
-value_t interpret(context_t *ctx, ast_node_t *node)
+value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 {
     switch (node->type) {
     case NODE_NUMBER:
@@ -1999,7 +2044,7 @@ value_t interpret(context_t *ctx, ast_node_t *node)
         return create_value(VALUE_NIL, (value_data_t){});
 
     case NODE_IDENTIFIER: {
-        value_t *value = get_var_entry(node->value.identifier.name);
+        value_t *value = get_var_in_scope(env, node->value.identifier.name);
         if (!value) {
             // TODO(fcasibu): caller location
             report_runtime(0, 0, ctx->source_filename, ctx->source, 0, "Undefined variable");
@@ -2013,29 +2058,30 @@ value_t interpret(context_t *ctx, ast_node_t *node)
         return create_nothing_value();
 
     case NODE_BINARY:
-        return interpret_binary(ctx, node);
+        return interpret_binary(ctx, node, env);
 
     case NODE_UNARY:
-        return interpret_unary(ctx, node);
+        return interpret_unary(ctx, node, env);
 
     case NODE_TERNARY:
-        return interpret_ternary(ctx, node);
+        return interpret_ternary(ctx, node, env);
 
     case NODE_PRINT: {
         printf("%s\n",
-               stringify_value(ctx->arena, interpret(ctx, node->value.print_stmt.expression)));
+               stringify_value(ctx->arena, interpret(ctx, node->value.print_stmt.expression, env)));
         return create_nothing_value();
     }
     case NODE_VAR: {
-        if (set_var_entry(ctx->arena, node->value.var_decl.identifier->value.identifier.name,
-                          interpret(ctx, node->value.var_decl.expression)) != 0)
+        if (set_var_entry(ctx->arena, &env->pool,
+                          node->value.var_decl.identifier->value.identifier.name,
+                          interpret(ctx, node->value.var_decl.expression, env)) != 0)
             return create_error_value();
 
         return create_nothing_value();
     }
     case NODE_ASSIGN: {
         const char *var_name = node->value.assign.identifier->value.identifier.name;
-        value_t *value = get_var_entry(var_name);
+        value_t *value = get_var_in_scope(env, var_name);
 
         if (!value) {
             // TODO(fcasibu): caller location
@@ -2043,14 +2089,18 @@ value_t interpret(context_t *ctx, ast_node_t *node)
             return create_error_value();
         }
 
-        if (set_var_entry(ctx->arena, var_name, interpret(ctx, node->value.assign.expression)) != 0)
+        if (set_var_in_scope(ctx->arena, env, var_name,
+                             interpret(ctx, node->value.assign.expression, env)) != 0)
             return create_error_value();
 
         return create_nothing_value();
     }
 
     case NODE_BLOCK: {
-        run_declarations(ctx, node->value.block.declarations, node->value.block.size);
+        environment_t *local_env = create_env(ctx->arena, env);
+        arena_da_append(ctx->arena, env, local_env);
+
+        run_declarations(ctx, node->value.block.declarations, node->value.block.size, local_env);
 
         return create_nothing_value();
     };
@@ -2107,4 +2157,14 @@ bool check_same_operands(context_t *ctx, token_t tok, value_t left, value_t righ
                    "Operands must be of same type.");
 
     return false;
+}
+
+environment_t *create_env(arena_t *arena, environment_t *parent)
+{
+    // TODO(fcasibu): oom
+    environment_t *env = arena_alloc(arena, sizeof(*env));
+    env->parent_env = parent;
+    arena_da_init(arena, env);
+
+    return env;
 }
