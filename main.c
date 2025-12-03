@@ -41,7 +41,7 @@ typedef enum {
     // clang-format off
     NODE_NUMBER, NODE_STRING, NODE_BOOL, NODE_NIL, NODE_UNARY, NODE_BINARY,
     NODE_PROGRAM, NODE_IDENTIFIER, NODE_TERNARY, NODE_PRINT, NODE_VAR,
-    NODE_ASSIGN, NODE_NOTHING
+    NODE_ASSIGN, NODE_BLOCK, NODE_NOTHING
     // clang-format on
 } node_type_t;
 
@@ -133,6 +133,11 @@ typedef union {
     struct {
         struct ast_node **declarations;
         usize size;
+    } block;
+
+    struct {
+        struct ast_node **declarations;
+        usize size;
     } program;
 } node_value_t;
 
@@ -216,11 +221,13 @@ void report_runtime(usize line_idx, usize col_idx, const char *source_filename, 
 void report_unexpected_token(context_t *ctx, token_t tok, const char *expected);
 void report_missing_expression(context_t *ctx, token_t tok, const char *error_msg);
 void run(context_t *ctx);
+void run_declarations(context_t *ctx, ast_node_t **declarations, usize size);
 void tokenize(context_t *ctx, lexer_t *lexer);
 void parse(context_t *ctx, parser_t *parser);
 ast_node_t *parse_declaration(context_t *ctx, parser_t *parser);
 ast_node_t *parse_var_declaration(context_t *ctx, parser_t *parser);
 ast_node_t *parse_statement(context_t *ctx, parser_t *parser);
+ast_node_t *parse_block(context_t *ctx, parser_t *parser);
 ast_node_t *parse_print_stmt(context_t *ctx, parser_t *parser);
 ast_node_t *parse_expression(context_t *ctx, parser_t *parser);
 ast_node_t *parse_assignment(context_t *ctx, parser_t *parser);
@@ -476,8 +483,15 @@ void run(context_t *ctx)
     if (had_error)
         return;
 
-    for (usize i = 0; i < parser.root->value.program.size; ++i) {
-        value_t value = interpret(ctx, parser.root->value.program.declarations[i]);
+    run_declarations(ctx, parser.root->value.program.declarations, parser.root->value.program.size);
+
+    // print_ast(parser.root, 0);
+}
+
+void run_declarations(context_t *ctx, ast_node_t **declarations, usize size)
+{
+    for (usize i = 0; i < size; ++i) {
+        value_t value = interpret(ctx, declarations[i]);
 
         switch (value.type) {
         case VALUE_NUMBER: {
@@ -500,7 +514,6 @@ void run(context_t *ctx)
             break;
         }
     }
-    // print_ast(parser.root, 0);
 }
 
 void parse(context_t *ctx, parser_t *parser)
@@ -532,16 +545,12 @@ ast_node_t *parse_declaration(context_t *ctx, parser_t *parser)
     switch (tok.type) {
     case VAR: {
         ast_node_t *node = parse_var_declaration(ctx, parser);
-        consume(ctx, parser, SEMICOLON, "Expected semicolon");
 
+        consume(ctx, parser, SEMICOLON, "Expected semicolon");
         return node;
     }
-    default: {
-        ast_node_t *node = parse_statement(ctx, parser);
-        consume(ctx, parser, SEMICOLON, "Expected semicolon");
-
-        return node;
-    }
+    default:
+        return parse_statement(ctx, parser);
     }
 }
 
@@ -593,7 +602,14 @@ ast_node_t *parse_statement(context_t *ctx, parser_t *parser)
 
     switch (tok.type) {
     case PRINT: {
-        return parse_print_stmt(ctx, parser);
+        ast_node_t *node = parse_print_stmt(ctx, parser);
+
+        consume(ctx, parser, SEMICOLON, "Expected semicolon");
+        return node;
+    }
+
+    case LEFT_BRACE: {
+        return parse_block(ctx, parser);
     }
 
     default: {
@@ -613,9 +629,44 @@ ast_node_t *parse_statement(context_t *ctx, parser_t *parser)
             left = create_node(ctx->arena, NODE_BINARY, node_value, left->start, right->start);
         }
 
+        consume(ctx, parser, SEMICOLON, "Expected semicolon");
+
         return left;
     }
     }
+}
+
+ast_node_t *parse_block(context_t *ctx, parser_t *parser)
+{
+    token_t tok = advance_parser(parser);
+    assert(tok.type == LEFT_BRACE);
+
+    ast_nodes_t block_declarations = { 0 };
+    arena_da_init(ctx->arena, &block_declarations);
+
+    while (!match_parser(parser, 1, RIGHT_BRACE) && !parser_is_eof(parser)) {
+        ast_node_t *node = parse_declaration(ctx, parser);
+
+        if (!node)
+            continue;
+
+        arena_da_append(ctx->arena, &block_declarations, node);
+    }
+
+    token_t end_tok = advance_parser(parser);
+    if (end_tok.type != RIGHT_BRACE) {
+        report(end_tok.line - 1, end_tok.col - 1, ctx->source_filename, ctx->source,
+               end_tok.line_start, "Unterminated block.");
+        synchronize(parser);
+        return create_node(ctx->arena, NODE_NOTHING, (node_value_t){}, 0, 0);
+    }
+
+    return create_node(ctx->arena, NODE_BLOCK,
+                       (node_value_t){
+                           .block.declarations = block_declarations.items,
+                           .block.size = block_declarations.size,
+                       },
+                       tok.cursor, end_tok.cursor);
 }
 
 ast_node_t *parse_print_stmt(context_t *ctx, parser_t *parser)
@@ -1997,6 +2048,12 @@ value_t interpret(context_t *ctx, ast_node_t *node)
 
         return create_nothing_value();
     }
+
+    case NODE_BLOCK: {
+        run_declarations(ctx, node->value.block.declarations, node->value.block.size);
+
+        return create_nothing_value();
+    };
     default: {
         __builtin_unreachable();
     }
