@@ -87,6 +87,13 @@ typedef struct {
     tokens_t tokens;
 } lexer_t;
 
+typedef struct {
+    usize line;
+    usize col;
+    usize line_start;
+    usize cursor;
+} source_loc_t;
+
 typedef union {
     struct {
         const char *string;
@@ -96,6 +103,8 @@ typedef union {
 
     struct {
         const char *name;
+        // TODO(fcasibu): maybe source loc should be on the node..
+        source_loc_t loc;
     } identifier;
 
     struct {
@@ -1179,7 +1188,17 @@ ast_node_t *parse_identifier(context_t *ctx, parser_t *parser)
     if (!value)
         return NULL;
 
-    node_value_t node_value = { .identifier = { .name = value } };
+    node_value_t node_value = { 
+        .identifier = { 
+            .name = value,
+            .loc = {
+                .line = tok.line,
+                .col = tok.col,
+                .line_start = tok.line_start,
+                .cursor = tok.cursor,
+            },
+        }
+    };
     return create_node(ctx->arena, NODE_IDENTIFIER, node_value, tok.cursor, tok.lexeme_len);
 }
 
@@ -2048,15 +2067,17 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
     case NODE_IDENTIFIER: {
         var_pool_entry_t *entry = get_var_in_scope(env, node->value.identifier.name);
+        source_loc_t loc = node->value.identifier.loc;
+
         if (!entry) {
-            // TODO(fcasibu): caller location
-            report_runtime(0, 0, ctx->source_filename, ctx->source, 0, "Undefined variable");
+            report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
+                           loc.line_start, "Undefined variable");
             return create_error_value();
         }
 
         if (entry->value.type == VALUE_UNINITIALIZED) {
-            // TODO(fcasibu): caller location
-            report_runtime(0, 0, ctx->source_filename, ctx->source, 0, "Uninitialized variable");
+            report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
+                           loc.line_start, "Uninitialized variable");
             return create_error_value();
         }
 
@@ -2090,12 +2111,12 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     }
     case NODE_ASSIGN: {
         const char *var_name = node->value.assign.identifier->value.identifier.name;
+        source_loc_t loc = node->value.assign.identifier->value.identifier.loc;
         var_pool_entry_t *var_entry = get_var_in_scope(env, var_name);
 
         if (!var_entry) {
-            // TODO(fcasibu): caller location
-            report_runtime(0, 0, ctx->source_filename, ctx->source, 0,
-                           "Use of undeclared identifier");
+            report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
+                           loc.line_start, "Use of undeclared identifier");
             return create_error_value();
         }
 
