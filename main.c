@@ -2175,8 +2175,12 @@ bool check_same_operands(context_t *ctx, token_t tok, value_t left, value_t righ
 
 environment_t *create_env(arena_t *arena, environment_t *parent)
 {
-    // TODO(fcasibu): oom
     environment_t *env = arena_alloc(arena, sizeof(*env));
+    if (!env) {
+        fprintf(stderr, "Out of memory\n");
+        abort();
+    }
+
     env->parent_env = parent;
     arena_da_init(arena, env);
 
