@@ -9,7 +9,7 @@
 #include "logger.h"
 #include "type_defs.h"
 
-#define ARENA_SIZE 1024
+#define ARENA_SIZE 1024 * 1024 * 1024
 #define LANG_NAME "lox"
 #define LANG_NAME_LEN 3
 
@@ -48,8 +48,7 @@ typedef enum {
 typedef enum {
     // clang-format off
     VALUE_NUMBER, VALUE_STRING, VALUE_BOOL, VALUE_NIL,
-    // TODO(fcasibu): maybe better to name nothing to uninitialized
-    VALUE_ERROR, VALUE_NOTHING
+    VALUE_ERROR, VALUE_UNINITIALIZED
     // clang-format on
 } value_type_t;
 
@@ -276,8 +275,6 @@ token_t advance_parser(parser_t *parser);
 bool match_parser(parser_t *parser, usize count, ...);
 void synchronize(parser_t *parser);
 const char *intern(arena_t *arena, const char *s);
-const char *intern_token_lexeme(context_t *ctx, parser_t *parser);
-void consume_terminator(parser_t *parser, const char *message);
 bool is_truthy(value_t value);
 bool is_equal(value_t a, value_t b);
 const char *stringify_value(arena_t *arena, value_t value);
@@ -287,7 +284,7 @@ value_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *env);
 value_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *env);
 value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env);
 value_t create_value(value_type_t type, value_data_t value);
-value_t create_nothing_value();
+value_t create_uninitialized_value();
 value_t create_error_value();
 bool check_number_operand(context_t *ctx, token_t tok, value_t child);
 bool check_number_operands(context_t *ctx, token_t tok, value_t left, value_t right);
@@ -445,17 +442,18 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    const char *source_filename = argv[1];
+
     arena_t arena = { 0 };
-    if (!arena_create(&arena, ARENA_SIZE)) {
+    if (!arena_create(&arena, (usize)ARENA_SIZE)) {
         LOG(LOG_ERROR, "%s", "Failed to create arena");
         return 1;
     }
 
-    const char *source_filename = argv[1];
-
     const char *source = get_input(&arena, source_filename);
 
     if (!source) {
+        arena_destroy(&arena);
         LOG(LOG_ERROR, "Failed to open file '%s'", source_filename);
         return 1;
     }
@@ -468,6 +466,8 @@ int main(int argc, char **argv)
     };
 
     run(&ctx);
+
+    arena_destroy(&arena);
 
     if (had_error)
         return 65;
@@ -1659,7 +1659,12 @@ const char *intern(arena_t *arena, const char *s)
     if (!entry)
         return NULL;
 
-    entry->str = strdup(s);
+    usize s_len = strlen(s);
+    char *str = arena_alloc(arena, sizeof(*str) * s_len + 1);
+    memcpy(str, s, s_len);
+    str[s_len] = '\0';
+
+    entry->str = str;
     if (!entry->str)
         return NULL;
 
@@ -1799,7 +1804,7 @@ const char *stringify_value(arena_t *arena, value_t value)
         return "";
     case VALUE_STRING:
         return value.value.string;
-    case VALUE_NOTHING:
+    case VALUE_UNINITIALIZED:
         return NULL;
     }
 }
@@ -2049,11 +2054,17 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
             return create_error_value();
         }
 
+        if (entry->value.type == VALUE_UNINITIALIZED) {
+            // TODO(fcasibu): caller location
+            report_runtime(0, 0, ctx->source_filename, ctx->source, 0, "Uninitialized variable");
+            return create_error_value();
+        }
+
         return entry->value;
     }
 
     case NODE_NOTHING:
-        return create_nothing_value();
+        return create_uninitialized_value();
 
     case NODE_BINARY:
         return interpret_binary(ctx, node, env);
@@ -2067,7 +2078,7 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     case NODE_PRINT: {
         printf("%s\n",
                stringify_value(ctx->arena, interpret(ctx, node->value.print_stmt.expression, env)));
-        return create_nothing_value();
+        return create_uninitialized_value();
     }
     case NODE_VAR: {
         if (set_var_entry(ctx->arena, &env->pool,
@@ -2075,7 +2086,7 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
                           interpret(ctx, node->value.var_decl.expression, env)) != 0)
             return create_error_value();
 
-        return create_nothing_value();
+        return create_uninitialized_value();
     }
     case NODE_ASSIGN: {
         const char *var_name = node->value.assign.identifier->value.identifier.name;
@@ -2083,7 +2094,8 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
         if (!var_entry) {
             // TODO(fcasibu): caller location
-            report_runtime(0, 0, ctx->source_filename, ctx->source, 0, "Undefined variable");
+            report_runtime(0, 0, ctx->source_filename, ctx->source, 0,
+                           "Use of undeclared identifier");
             return create_error_value();
         }
 
@@ -2091,7 +2103,7 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
                              interpret(ctx, node->value.assign.expression, env)) != 0)
             return create_error_value();
 
-        return create_nothing_value();
+        return create_uninitialized_value();
     }
 
     case NODE_BLOCK: {
@@ -2100,7 +2112,7 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
         run_declarations(ctx, node->value.block.declarations, node->value.block.size, local_env);
 
-        return create_nothing_value();
+        return create_uninitialized_value();
     };
     default: {
         __builtin_unreachable();
@@ -2113,9 +2125,9 @@ value_t create_value(value_type_t type, value_data_t value)
     return (value_t){ .type = type, .value = value };
 }
 
-value_t create_nothing_value()
+value_t create_uninitialized_value()
 {
-    return (value_t){ .type = VALUE_NOTHING };
+    return (value_t){ .type = VALUE_UNINITIALIZED };
 }
 
 value_t create_error_value()

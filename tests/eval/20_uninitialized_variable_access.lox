@@ -1,0 +1,5 @@
+// uninitialized variable
+
+var a;
+
+print a; // should error
