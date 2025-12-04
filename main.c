@@ -535,6 +535,11 @@ void run_declarations(context_t *ctx, ast_node_t **declarations, usize size, env
             printf("nil\n");
         } break;
 
+        case VALUE_ERROR: {
+            had_runtime_error = true;
+            return;
+        };
+
         default:
             break;
         }
@@ -2054,7 +2059,7 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
         if (!entry) {
             report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
-                           loc.line_start, "Undefined variable");
+                           loc.line_start, "Variable is not defined");
             return create_error_value();
         }
 
@@ -2136,7 +2141,6 @@ value_t create_uninitialized_value()
 
 value_t create_error_value()
 {
-    // TODO(fcasibu): do something with this error value
     return (value_t){ .type = VALUE_ERROR };
 }
 
