@@ -283,8 +283,8 @@ value_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *env);
 value_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *env);
 value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env);
 value_t create_value(value_type_t type, value_data_t value);
-value_t create_uninitialized_value();
-value_t create_error_value();
+value_t create_uninitialized_value(void);
+value_t create_error_value(void);
 
 bool is_truthy(value_t value);
 bool is_equal(value_t a, value_t b);
@@ -2134,12 +2134,12 @@ value_t create_value(value_type_t type, value_data_t value)
     return (value_t){ .type = type, .value = value };
 }
 
-value_t create_uninitialized_value()
+value_t create_uninitialized_value(void)
 {
     return (value_t){ .type = VALUE_UNINITIALIZED };
 }
 
-value_t create_error_value()
+value_t create_error_value(void)
 {
     return (value_t){ .type = VALUE_ERROR };
 }
