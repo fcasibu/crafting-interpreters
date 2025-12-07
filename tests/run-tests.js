@@ -12,7 +12,7 @@ const NC = "\x1b[0m";
 
 const ROOT_DIR = path.join(__dirname, "..");
 const TESTS_DIR = path.join(ROOT_DIR, "tests");
-const LOX_BINARY = path.join(ROOT_DIR, "lox");
+const LOX_BINARY = path.join(ROOT_DIR, "build/crafting-interpreters");
 
 const EX_DATAERR = 65;
 const EX_SOFTWARE = 70;

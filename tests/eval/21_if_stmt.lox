@@ -1,0 +1,22 @@
+// if statement
+
+// one line
+if (true) 
+    print 1;
+
+// block
+if (true) {
+    print 1;
+    print 2;
+}
+
+// else branch
+if (false) print 1;
+else print 2;
+
+// else block
+if (false) {
+} else {
+    print 1;
+    print 2;
+}
