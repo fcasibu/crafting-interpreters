@@ -61,6 +61,7 @@ typedef union {
 typedef struct {
     value_type_t type;
     value_data_t value;
+    bool is_statement;
 } value_t;
 
 typedef struct {
@@ -108,14 +109,14 @@ typedef union {
     } identifier;
 
     struct {
-        token_t op;
         struct ast_node *child;
+        token_t op;
     } unary;
 
     struct {
-        token_t op;
         struct ast_node *left;
         struct ast_node *right;
+        token_t op;
     } binary;
 
     struct {
@@ -289,6 +290,7 @@ value_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *env);
 value_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *env);
 value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env);
 value_t create_value(value_type_t type, value_data_t value);
+value_t create_statement_value(void);
 value_t create_uninitialized_value(void);
 value_t create_error_value(void);
 
@@ -524,28 +526,31 @@ void run_declarations(context_t *ctx, ast_node_t **declarations, usize size, env
     for (usize i = 0; i < size; ++i) {
         value_t value = interpret(ctx, declarations[i], env);
 
+        if (value.type == VALUE_ERROR) {
+            had_runtime_error = true;
+            return;
+        }
+
+        if (value.is_statement || declarations[i]->type == NODE_ASSIGN)
+            continue;
+
         switch (value.type) {
         case VALUE_NUMBER: {
             printf("%g\n", value.value.number);
-        } break;
 
+        } break;
         case VALUE_BOOL: {
             printf("%s\n", value.value.boolean ? "true" : "false");
-        } break;
 
+        } break;
         case VALUE_STRING: {
             printf("%s\n", value.value.string);
-        } break;
 
+        } break;
         case VALUE_NIL: {
             printf("nil\n");
+
         } break;
-
-        case VALUE_ERROR: {
-            had_runtime_error = true;
-            return;
-        };
-
         default:
             break;
         }
@@ -661,34 +666,17 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
     }
 
     default: {
-        ast_node_t *left = parser_parse_expression(ctx, parser);
+        ast_node_t *node = parser_parse_expression(ctx, parser);
 
-        if (!left) {
+        if (!node) {
             parser_synchronize(parser);
             return NULL;
         }
 
-        while (!parser_is_eof(parser) && parser_match(parser, 1, COMMA)) {
-            token_t op = parser_advance(parser);
-
-            ast_node_t *right = parser_parse_expression(ctx, parser);
-
-            if (!right) {
-                parser_synchronize(parser);
-                return NULL;
-            }
-
-            node_value_t node_value = {
-                .binary = { .op = op, .left = left, .right = right },
-            };
-            left =
-                parser_create_node(ctx->arena, NODE_BINARY, node_value, left->start, right->start);
-        }
-
         if (parser_advance(parser).type != SEMICOLON)
-            report_unexpected_token(ctx, parser_previous(parser), ";");
+            report_error_at_token(ctx, parser_previous(parser), "Expected ';' after");
 
-        return left;
+        return node;
     }
     }
 }
@@ -799,7 +787,26 @@ ast_node_t *parser_parse_print_stmt(context_t *ctx, parser_t *parser)
 
 ast_node_t *parser_parse_expression(context_t *ctx, parser_t *parser)
 {
-    return parser_parse_assignment(ctx, parser);
+    ast_node_t *left = parser_parse_assignment(ctx, parser);
+
+    if (!left)
+        return NULL;
+
+    while (!parser_is_eof(parser) && parser_match(parser, 1, COMMA)) {
+        token_t op = parser_advance(parser);
+
+        ast_node_t *right = parser_parse_expression(ctx, parser);
+
+        if (!right)
+            return NULL;
+
+        node_value_t node_value = {
+            .binary = { .op = op, .left = left, .right = right },
+        };
+        left = parser_create_node(ctx->arena, NODE_BINARY, node_value, left->start, right->start);
+    }
+
+    return left;
 }
 
 ast_node_t *parser_parse_assignment(context_t *ctx, parser_t *parser)
@@ -1064,8 +1071,7 @@ ast_node_t *parser_parse_unary(context_t *ctx, parser_t *parser)
 
     switch (tok.type) {
     case PLUS:
-    case MINUS:
-    case BANG: {
+    case MINUS: {
         parser_advance(parser);
         ast_node_t *node = parser_parse_primary(ctx, parser);
         if (!node) {
@@ -1076,6 +1082,22 @@ ast_node_t *parser_parse_unary(context_t *ctx, parser_t *parser)
         node_value_t value = { .unary = { .op = tok, .child = node } };
         return parser_create_node(ctx->arena, NODE_UNARY, value, node->start, node->end);
     };
+
+    case BANG: {
+        parser_advance(parser);
+
+        bool is_bang = parser_peek(parser).type == BANG;
+        ast_node_t *node = is_bang ? parser_parse_unary(ctx, parser) :
+                                     parser_parse_primary(ctx, parser);
+
+        if (!node) {
+            report_error_at_token(ctx, tok, "Unary operator must have an operand");
+            return NULL;
+        }
+
+        node_value_t value = { .unary = { .op = tok, .child = node } };
+        return parser_create_node(ctx->arena, NODE_UNARY, value, node->start, node->end);
+    }
 
     default:
         break;
@@ -1116,10 +1138,8 @@ ast_node_t *parser_parse_primary(context_t *ctx, parser_t *parser)
             return NULL;
         }
 
-        token_t next_tok = parser_advance(parser);
-
-        if (next_tok.type != RIGHT_PAREN) {
-            report_unexpected_token(ctx, next_tok, ")");
+        if (parser_advance(parser).type != RIGHT_PAREN) {
+            report_unexpected_token(ctx, parser_previous(parser), ")");
 
             return NULL;
         }
@@ -1927,17 +1947,17 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *env)
 
     switch (node->value.binary.op.type) {
     case OR: {
-        return create_value(
-            VALUE_BOOL,
-            (value_data_t){ .boolean = is_truthy(interpret(ctx, node->value.binary.left, env)) ||
-                                       is_truthy(interpret(ctx, node->value.binary.right, env)) });
+        value_t left = interpret(ctx, node->value.binary.left, env);
+        value_t right = interpret(ctx, node->value.binary.right, env);
+
+        return is_truthy(left) ? left : right;
     }
 
     case AND: {
-        return create_value(
-            VALUE_BOOL,
-            (value_data_t){ .boolean = is_truthy(interpret(ctx, node->value.binary.left, env)) &&
-                                       is_truthy(interpret(ctx, node->value.binary.right, env)) });
+        value_t left = interpret(ctx, node->value.binary.left, env);
+        value_t right = interpret(ctx, node->value.binary.right, env);
+
+        return is_truthy(left) ? right : left;
     }
 
     case EQUAL_EQUAL: {
@@ -2129,7 +2149,7 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         printf("%s\n",
                stringify_value(ctx->arena, interpret(ctx, node->value.print_stmt.expression, env)));
 
-        return create_value(VALUE_NIL, (value_data_t){});
+        return create_statement_value();
     }
     case NODE_VAR: {
         if (node->value.var_decl.expression->type == NODE_UNINITIALIZED)
@@ -2141,7 +2161,7 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         if (set_var_entry(ctx->arena, &env->pool, identifier, value) != 0)
             return create_error_value();
 
-        return create_value(VALUE_NIL, (value_data_t){});
+        return create_statement_value();
     }
     case NODE_ASSIGN: {
         const char *var_name = node->value.assign.identifier->value.identifier.name;
@@ -2167,7 +2187,7 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
         run_declarations(ctx, node->value.block.declarations, node->value.block.size, local_env);
 
-        return create_value(VALUE_NIL, (value_data_t){});
+        return create_statement_value();
     };
 
     case NODE_IF: {
@@ -2183,7 +2203,7 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
             interpret(ctx, node->value.if_stmt.else_branch, env);
         }
 
-        return create_value(VALUE_NIL, (value_data_t){});
+        return create_statement_value();
     };
 
     default: {
@@ -2195,6 +2215,11 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 value_t create_value(value_type_t type, value_data_t value)
 {
     return (value_t){ .type = type, .value = value };
+}
+
+value_t create_statement_value(void)
+{
+    return (value_t){ .type = VALUE_NIL, .is_statement = true };
 }
 
 value_t create_uninitialized_value(void)

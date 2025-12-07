@@ -1,23 +1,23 @@
 // Test logical operators
 
-true and true;
-true and false;
-false and true;
-false and false;
+!!(true and true);
+!!(true and false);
+!!(false and true);
+!!(false and false);
 
-true or true;
-true or false;
-false or true;
-false or false;
+!!(true or true);
+!!(true or false);
+!!(false or true);
+!!(false or false);
 
 // Short-circuit behavior
-true and 1;
-false and 1;
-true or 1;
-false or 1;
+!!(true and 1);
+!!(false and 1);
+!!(true or 1);
+!!(false or 1);
 
 // Complex expressions
-(1 < 2) and (3 > 1);
-(1 > 2) or (3 < 1);
-(1 == 1) and (2 != 3);
+!!((1 < 2) and (3 > 1));
+!!((1 > 2) or (3 < 1));
+!!((1 == 1) and (2 != 3));
 
