@@ -41,7 +41,7 @@ typedef enum {
     // clang-format off
     NODE_NUMBER, NODE_STRING, NODE_BOOL, NODE_NIL, NODE_UNARY, NODE_BINARY,
     NODE_PROGRAM, NODE_IDENTIFIER, NODE_TERNARY, NODE_PRINT, NODE_VAR,
-    NODE_ASSIGN, NODE_BLOCK, NODE_IF, NODE_NOTHING
+    NODE_ASSIGN, NODE_BLOCK, NODE_IF, NODE_UNINITIALIZED
     // clang-format on
 } node_type_t;
 
@@ -606,12 +606,12 @@ ast_node_t *parser_parse_var_declaration(context_t *ctx, parser_t *parser)
     assert(parser_advance(parser).type == IDENTIFIER);
 
     if (parser_peek(parser).type == SEMICOLON)
-        return parser_create_node(ctx->arena, NODE_VAR,
-                                  (node_value_t){ .var_decl.identifier = identifier,
-                                                  .var_decl.expression =
-                                                      parser_create_node(ctx->arena, NODE_NOTHING,
-                                                                         (node_value_t){}, 0, 0) },
-                                  tok.cursor, identifier->end);
+        return parser_create_node(
+            ctx->arena, NODE_VAR,
+            (node_value_t){ .var_decl.identifier = identifier,
+                            .var_decl.expression = parser_create_node(
+                                ctx->arena, NODE_UNINITIALIZED, (node_value_t){}, 0, 0) },
+            tok.cursor, identifier->end);
 
     if (parser_advance(parser).type != EQUAL) {
         report_unexpected_token(ctx, parser_previous(parser), "=");
@@ -2116,9 +2116,6 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         return entry->value;
     }
 
-    case NODE_NOTHING:
-        return create_uninitialized_value();
-
     case NODE_BINARY:
         return interpret_binary(ctx, node, env);
 
@@ -2131,15 +2128,20 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     case NODE_PRINT: {
         printf("%s\n",
                stringify_value(ctx->arena, interpret(ctx, node->value.print_stmt.expression, env)));
-        return create_uninitialized_value();
+
+        return create_value(VALUE_NIL, (value_data_t){});
     }
     case NODE_VAR: {
-        if (set_var_entry(ctx->arena, &env->pool,
-                          node->value.var_decl.identifier->value.identifier.name,
-                          interpret(ctx, node->value.var_decl.expression, env)) != 0)
+        if (node->value.var_decl.expression->type == NODE_UNINITIALIZED)
+            return create_uninitialized_value();
+
+        const char *identifier = node->value.var_decl.identifier->value.identifier.name;
+        value_t value = interpret(ctx, node->value.var_decl.expression, env);
+
+        if (set_var_entry(ctx->arena, &env->pool, identifier, value) != 0)
             return create_error_value();
 
-        return create_uninitialized_value();
+        return create_value(VALUE_NIL, (value_data_t){});
     }
     case NODE_ASSIGN: {
         const char *var_name = node->value.assign.identifier->value.identifier.name;
@@ -2152,11 +2154,11 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
             return create_error_value();
         }
 
-        if (set_var_in_scope(ctx->arena, env, var_name,
-                             interpret(ctx, node->value.assign.expression, env)) != 0)
+        value_t value = interpret(ctx, node->value.assign.expression, env);
+        if (set_var_in_scope(ctx->arena, env, var_name, value) != 0)
             return create_error_value();
 
-        return create_uninitialized_value();
+        return value;
     }
 
     case NODE_BLOCK: {
@@ -2165,7 +2167,7 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
         run_declarations(ctx, node->value.block.declarations, node->value.block.size, local_env);
 
-        return create_uninitialized_value();
+        return create_value(VALUE_NIL, (value_data_t){});
     };
 
     case NODE_IF: {
@@ -2181,7 +2183,7 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
             interpret(ctx, node->value.if_stmt.else_branch, env);
         }
 
-        return create_uninitialized_value();
+        return create_value(VALUE_NIL, (value_data_t){});
     };
 
     default: {
