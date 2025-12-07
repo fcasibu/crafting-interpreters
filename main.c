@@ -242,7 +242,6 @@ void lexer_append_token(context_t *ctx, lexer_t *lexer, token_type_t type, const
                         usize line_start);
 bool lexer_match(context_t *ctx, lexer_t *lexer, char ch);
 char lexer_advance(context_t *ctx, lexer_t *lexer);
-void lexer_consume(context_t *ctx, parser_t *parser, token_type_t type, const char *message);
 char lexer_peek(context_t *ctx, lexer_t *lexer);
 char lexer_peek_next(context_t *ctx, lexer_t *lexer);
 void lexer_string(context_t *ctx, lexer_t *lexer);
@@ -304,7 +303,7 @@ void report(usize line_idx, usize col_idx, const char *source_filename, const ch
 void report_runtime(usize line_idx, usize col_idx, const char *source_filename, const char *source,
                     usize line_start, const char *message);
 void report_unexpected_token(context_t *ctx, token_t tok, const char *expected);
-void report_missing_expression(context_t *ctx, token_t tok, const char *error_msg);
+void report_error_at_token(context_t *ctx, token_t tok, const char *error_msg);
 void run(context_t *ctx);
 void run_declarations(context_t *ctx, ast_node_t **declarations, usize size, environment_t *env);
 const char *intern(arena_t *arena, const char *s);
@@ -581,7 +580,13 @@ ast_node_t *parser_parse_declaration(context_t *ctx, parser_t *parser)
 
     switch (tok.type) {
     case VAR: {
-        return parser_parse_var_declaration(ctx, parser);
+        ast_node_t *node = parser_parse_var_declaration(ctx, parser);
+
+        if (parser_advance(parser).type != SEMICOLON)
+            report_error_at_token(ctx, parser_previous(parser),
+                                  "Expected ';' at the end of 'var' declaration");
+
+        return node;
     }
     default:
         return parser_parse_statement(ctx, parser);
@@ -600,14 +605,13 @@ ast_node_t *parser_parse_var_declaration(context_t *ctx, parser_t *parser)
 
     assert(parser_advance(parser).type == IDENTIFIER);
 
-    if (parser_peek(parser).type == SEMICOLON) {
+    if (parser_peek(parser).type == SEMICOLON)
         return parser_create_node(ctx->arena, NODE_VAR,
                                   (node_value_t){ .var_decl.identifier = identifier,
                                                   .var_decl.expression =
                                                       parser_create_node(ctx->arena, NODE_NOTHING,
                                                                          (node_value_t){}, 0, 0) },
                                   tok.cursor, identifier->end);
-    }
 
     if (parser_advance(parser).type != EQUAL) {
         report_unexpected_token(ctx, parser_previous(parser), "=");
@@ -617,7 +621,7 @@ ast_node_t *parser_parse_var_declaration(context_t *ctx, parser_t *parser)
     ast_node_t *expression = parser_parse_expression(ctx, parser);
 
     if (!expression) {
-        report_missing_expression(ctx, parser_previous(parser), "Expected expression after '='");
+        report_error_at_token(ctx, parser_previous(parser), "Expected expression after '='");
         return NULL;
     }
 
@@ -646,7 +650,8 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
     case PRINT: {
         ast_node_t *node = parser_parse_print_stmt(ctx, parser);
 
-        lexer_consume(ctx, parser, SEMICOLON, "Expected semicolon");
+        if (parser_advance(parser).type != SEMICOLON)
+            report_unexpected_token(ctx, parser_previous(parser), ";");
 
         return node;
     }
@@ -680,7 +685,8 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
                 parser_create_node(ctx->arena, NODE_BINARY, node_value, left->start, right->start);
         }
 
-        lexer_consume(ctx, parser, SEMICOLON, "Expected semicolon");
+        if (parser_advance(parser).type != SEMICOLON)
+            report_unexpected_token(ctx, parser_previous(parser), ";");
 
         return left;
     }
@@ -733,22 +739,20 @@ ast_node_t *parser_parse_if_stmt(context_t *ctx, parser_t *parser)
     ast_node_t *condition = parser_parse_expression(ctx, parser);
 
     if (!condition) {
-        report_missing_expression(ctx, parser_previous(parser),
-                                  "Expected if statement condition within parentheses");
+        report_error_at_token(ctx, parser_previous(parser),
+                              "Expected if statement condition within parentheses");
         return NULL;
     }
 
     if (parser_advance(parser).type != RIGHT_PAREN) {
-        // TODO(fcasibu): refactor report_unexpected_token
-        report_missing_expression(ctx, left_paren_tok, "Expected closing parenthesis");
+        report_error_at_token(ctx, left_paren_tok, "Expected closing parenthesis");
         return NULL;
     }
 
     ast_node_t *then_branch = parser_parse_statement(ctx, parser);
 
     if (!then_branch) {
-        report_missing_expression(ctx, parser_previous(parser),
-                                  "Expected statement after 'if (cond) ");
+        report_error_at_token(ctx, parser_previous(parser), "Expected statement after 'if (cond) ");
         return NULL;
     }
 
@@ -759,7 +763,7 @@ ast_node_t *parser_parse_if_stmt(context_t *ctx, parser_t *parser)
         else_branch = parser_parse_statement(ctx, parser);
 
         if (!else_branch) {
-            report_missing_expression(ctx, else_token, "Expected statement after 'else'");
+            report_error_at_token(ctx, else_token, "Expected statement after 'else'");
 
             return NULL;
         }
@@ -810,7 +814,7 @@ ast_node_t *parser_parse_assignment(context_t *ctx, parser_t *parser)
 
     if (parser_match(parser, 1, EQUAL)) {
         if (left->type != NODE_IDENTIFIER) {
-            report_missing_expression(ctx, parser_previous(parser), "Invalid assignment target.");
+            report_error_at_token(ctx, parser_previous(parser), "Invalid assignment target.");
             return NULL;
         }
 
@@ -818,8 +822,7 @@ ast_node_t *parser_parse_assignment(context_t *ctx, parser_t *parser)
         ast_node_t *right = parser_parse_assignment(ctx, parser);
 
         if (!right) {
-            report_missing_expression(ctx, parser_previous(parser),
-                                      "Expected expression after '='");
+            report_error_at_token(ctx, parser_previous(parser), "Expected expression after '='");
             return NULL;
         }
 
@@ -846,7 +849,7 @@ ast_node_t *parser_parse_ternary(context_t *ctx, parser_t *parser)
     parser_advance(parser);
 
     if (!condition) {
-        report_missing_expression(ctx, parser_previous(parser), "Expected condition before '?'");
+        report_error_at_token(ctx, parser_previous(parser), "Expected condition before '?'");
         return NULL;
     }
 
@@ -857,8 +860,8 @@ ast_node_t *parser_parse_ternary(context_t *ctx, parser_t *parser)
     }
 
     if (!parser_match(parser, 1, COLON)) {
-        report_missing_expression(ctx, parser_previous(parser),
-                                  "Expected false branch expression for ternary");
+        report_error_at_token(ctx, parser_previous(parser),
+                              "Expected false branch expression for ternary");
         return NULL;
     }
 
@@ -866,7 +869,7 @@ ast_node_t *parser_parse_ternary(context_t *ctx, parser_t *parser)
 
     ast_node_t *false_branch = parser_parse_ternary(ctx, parser);
     if (!false_branch) {
-        report_missing_expression(ctx, parser_previous(parser), "Expected expression after ':'");
+        report_error_at_token(ctx, parser_previous(parser), "Expected expression after ':'");
         return NULL;
     }
 
@@ -884,7 +887,7 @@ ast_node_t *parser_parse_logical_or(context_t *ctx, parser_t *parser)
 
     while (!parser_is_eof(parser) && parser_match(parser, 1, OR)) {
         if (!left) {
-            report_missing_expression(ctx, tok, "Missing left-hand expression");
+            report_error_at_token(ctx, tok, "Missing left-hand expression");
 
             return NULL;
         }
@@ -894,8 +897,7 @@ ast_node_t *parser_parse_logical_or(context_t *ctx, parser_t *parser)
         ast_node_t *right = parser_parse_logical_and(ctx, parser);
 
         if (!right) {
-            report_missing_expression(ctx, parser_previous(parser),
-                                      "Missing right-hand expression");
+            report_error_at_token(ctx, parser_previous(parser), "Missing right-hand expression");
 
             return NULL;
         }
@@ -914,7 +916,7 @@ ast_node_t *parser_parse_logical_and(context_t *ctx, parser_t *parser)
 
     while (!parser_is_eof(parser) && parser_match(parser, 1, AND)) {
         if (!left) {
-            report_missing_expression(ctx, tok, "Missing left-hand expression");
+            report_error_at_token(ctx, tok, "Missing left-hand expression");
 
             return NULL;
         }
@@ -924,8 +926,7 @@ ast_node_t *parser_parse_logical_and(context_t *ctx, parser_t *parser)
         ast_node_t *right = parser_parse_equality(ctx, parser);
 
         if (!right) {
-            report_missing_expression(ctx, parser_previous(parser),
-                                      "Missing right-hand expression");
+            report_error_at_token(ctx, parser_previous(parser), "Missing right-hand expression");
 
             return NULL;
         }
@@ -944,7 +945,7 @@ ast_node_t *parser_parse_equality(context_t *ctx, parser_t *parser)
 
     while (!parser_is_eof(parser) && parser_match(parser, 2, EQUAL_EQUAL, BANG_EQUAL)) {
         if (!left) {
-            report_missing_expression(ctx, tok, "Equality operators must have a left-hand operand");
+            report_error_at_token(ctx, tok, "Equality operators must have a left-hand operand");
 
             return NULL;
         }
@@ -954,8 +955,8 @@ ast_node_t *parser_parse_equality(context_t *ctx, parser_t *parser)
         ast_node_t *right = parser_parse_comparison(ctx, parser);
 
         if (!right) {
-            report_missing_expression(ctx, parser_previous(parser),
-                                      "Equality operators must have a right-hand operand");
+            report_error_at_token(ctx, parser_previous(parser),
+                                  "Equality operators must have a right-hand operand");
 
             return NULL;
         }
@@ -975,18 +976,18 @@ ast_node_t *parser_parse_comparison(context_t *ctx, parser_t *parser)
     while (!parser_is_eof(parser) &&
            parser_match(parser, 4, LESS, LESS_EQUAL, GREATER, GREATER_EQUAL)) {
         if (!left) {
-            report_missing_expression(ctx, tok,
-                                      "Comparison operators must have a left-hand operand");
+            report_error_at_token(ctx, tok, "Comparison operators must have a left-hand operand");
 
             return NULL;
         }
+
         token_t op = parser_advance(parser);
 
         ast_node_t *right = parser_parse_term(ctx, parser);
 
         if (!right) {
-            report_missing_expression(ctx, parser_previous(parser),
-                                      "Comparison operators must have a right-hand operand");
+            report_error_at_token(ctx, parser_previous(parser),
+                                  "Comparison operators must have a right-hand operand");
 
             return NULL;
         }
@@ -1004,8 +1005,8 @@ ast_node_t *parser_parse_term(context_t *ctx, parser_t *parser)
 
     while (!parser_is_eof(parser) && parser_match(parser, 2, PLUS, MINUS)) {
         if (!left) {
-            report_missing_expression(
-                ctx, tok, "Addition/subtraction operators must have a left-hand operand");
+            report_error_at_token(ctx, tok,
+                                  "Addition/subtraction operators must have a left-hand operand");
 
             return NULL;
         }
@@ -1014,9 +1015,8 @@ ast_node_t *parser_parse_term(context_t *ctx, parser_t *parser)
         ast_node_t *right = parser_parse_factor(ctx, parser);
 
         if (!right) {
-            report_missing_expression(
-                ctx, parser_previous(parser),
-                "Addition/subtraction operators must have a right-hand operand");
+            report_error_at_token(ctx, parser_previous(parser),
+                                  "Addition/subtraction operators must have a right-hand operand");
 
             return NULL;
         }
@@ -1034,7 +1034,7 @@ ast_node_t *parser_parse_factor(context_t *ctx, parser_t *parser)
 
     while (!parser_is_eof(parser) && parser_match(parser, 2, STAR, SLASH)) {
         if (!left) {
-            report_missing_expression(
+            report_error_at_token(
                 ctx, tok, "Multiplication/division operators must have a left-hand operand");
 
             return NULL;
@@ -1044,7 +1044,7 @@ ast_node_t *parser_parse_factor(context_t *ctx, parser_t *parser)
         ast_node_t *right = parser_parse_unary(ctx, parser);
 
         if (!right) {
-            report_missing_expression(
+            report_error_at_token(
                 ctx, parser_previous(parser),
                 "Multiplication/division operators must have a right-hand operand");
 
@@ -1069,7 +1069,7 @@ ast_node_t *parser_parse_unary(context_t *ctx, parser_t *parser)
         parser_advance(parser);
         ast_node_t *node = parser_parse_primary(ctx, parser);
         if (!node) {
-            report_missing_expression(ctx, tok, "Unary operator must have an operand");
+            report_error_at_token(ctx, tok, "Unary operator must have an operand");
             return NULL;
         }
 
@@ -1110,8 +1110,8 @@ ast_node_t *parser_parse_primary(context_t *ctx, parser_t *parser)
         ast_node_t *node = parser_parse_expression(ctx, parser);
 
         if (!node) {
-            report_missing_expression(ctx, parser_previous(parser),
-                                      "Expected expression inside parentheses");
+            report_error_at_token(ctx, parser_previous(parser),
+                                  "Expected expression inside parentheses");
 
             return NULL;
         }
@@ -1593,7 +1593,7 @@ void report_unexpected_token(context_t *ctx, token_t tok, const char *expected)
     report(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source, tok.line_start, error_msg);
 }
 
-void report_missing_expression(context_t *ctx, token_t tok, const char *error_msg)
+void report_error_at_token(context_t *ctx, token_t tok, const char *error_msg)
 {
     report(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source, tok.line_start, error_msg);
 }
@@ -1649,17 +1649,6 @@ token_t parser_advance(parser_t *parser)
         return parser->tokens[parser->tokens_size - 1];
 
     return parser->tokens[parser->current_index++];
-}
-
-void lexer_consume(context_t *ctx, parser_t *parser, token_type_t type, const char *message)
-{
-    if (parser_match(parser, 1, type)) {
-        parser_advance(parser);
-        return;
-    }
-
-    token_t tok = parser_previous(parser);
-    report(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source, tok.line_start, message);
 }
 
 bool parser_match(parser_t *parser, usize count, ...)
@@ -2188,10 +2177,8 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
             assert(node->value.if_stmt.then_branch);
 
             interpret(ctx, node->value.if_stmt.then_branch, env);
-        } else {
-            if (node->value.if_stmt.else_branch) {
-                interpret(ctx, node->value.if_stmt.else_branch, env);
-            }
+        } else if (node->value.if_stmt.else_branch) {
+            interpret(ctx, node->value.if_stmt.else_branch, env);
         }
 
         return create_uninitialized_value();
