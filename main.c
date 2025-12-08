@@ -32,6 +32,7 @@ typedef enum {
   // Keywords.
   AND, CLASS, ELSE, FALSE, FUN, FOR, IF, NIL, OR,
   PRINT, RETURN, SUPER, THIS, TRUE, VAR, WHILE,
+  BREAK,
 
   END_OF_FILE
 } token_type_t;
@@ -41,7 +42,8 @@ typedef enum {
     // clang-format off
     NODE_NUMBER, NODE_STRING, NODE_BOOL, NODE_NIL, NODE_UNARY, NODE_BINARY,
     NODE_PROGRAM, NODE_IDENTIFIER, NODE_TERNARY, NODE_PRINT, NODE_VAR,
-    NODE_ASSIGN, NODE_BLOCK, NODE_IF, NODE_WHILE, NODE_UNINITIALIZED
+    NODE_ASSIGN, NODE_BLOCK, NODE_IF, NODE_WHILE, NODE_FOR,
+    NODE_UNINITIALIZED
     // clang-format on
 } node_type_t;
 
@@ -141,6 +143,13 @@ typedef union {
     } while_stmt;
 
     struct {
+        struct ast_node *initializer;
+        struct ast_node *condition;
+        struct ast_node *increment;
+        struct ast_node *body;
+    } for_stmt;
+
+    struct {
         struct ast_node *identifier;
         struct ast_node *expression;
     } var_decl;
@@ -203,6 +212,7 @@ static const struct {
     {"true", TRUE},
     {"var", VAR},
     {"while", WHILE},
+    {"break", BREAK},
     // clang-format on
 };
 
@@ -265,6 +275,7 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser);
 ast_node_t *parser_parse_block(context_t *ctx, parser_t *parser);
 ast_node_t *parser_parse_if_stmt(context_t *ctx, parser_t *parser);
 ast_node_t *parser_parse_while_stmt(context_t *ctx, parser_t *parser);
+ast_node_t *parser_parse_for_stmt(context_t *ctx, parser_t *parser);
 ast_node_t *parser_parse_print_stmt(context_t *ctx, parser_t *parser);
 ast_node_t *parser_parse_expression(context_t *ctx, parser_t *parser);
 ast_node_t *parser_parse_assignment(context_t *ctx, parser_t *parser);
@@ -647,6 +658,15 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
     token_t tok = parser_peek(parser);
 
     switch (tok.type) {
+    case BREAK: {
+        parser_advance(parser);
+        TODO("Not yet implemented 'break'");
+    }
+
+    case FOR: {
+        return parser_parse_for_stmt(ctx, parser);
+    }
+
     case WHILE: {
         return parser_parse_while_stmt(ctx, parser);
     }
@@ -802,9 +822,9 @@ ast_node_t *parser_parse_while_stmt(context_t *ctx, parser_t *parser)
         return NULL;
     }
 
-    ast_node_t *then_branch = parser_parse_statement(ctx, parser);
+    ast_node_t *body = parser_parse_statement(ctx, parser);
 
-    if (!then_branch) {
+    if (!body) {
         report_error_at_token(ctx, parser_previous(parser),
                               "Expected statement after 'while (cond)'");
         return NULL;
@@ -813,11 +833,77 @@ ast_node_t *parser_parse_while_stmt(context_t *ctx, parser_t *parser)
     return parser_create_node(ctx->arena, NODE_WHILE,
                               (node_value_t){ .while_stmt = {
                                                   .condition = condition,
-                                                  .body = then_branch,
+                                                  .body = body,
                                               } },
                                 tok.cursor,
-                                then_branch->end
+                                body->end
                               );
+}
+
+ast_node_t *parser_parse_for_stmt(context_t *ctx, parser_t *parser)
+{
+    token_t tok = parser_advance(parser);
+    assert(tok.type == FOR);
+
+    token_t left_paren_tok = parser_advance(parser);
+    if (left_paren_tok.type != LEFT_PAREN) {
+        report_unexpected_token(ctx, parser_previous(parser), "(");
+        return NULL;
+    }
+
+    ast_node_t *initializer;
+
+    if (parser_peek(parser).type == VAR) {
+        initializer = parser_parse_var_declaration(ctx, parser);
+    } else {
+        initializer = parser_parse_expression(ctx, parser);
+    }
+
+    if (!initializer && parser_peek(parser).type != SEMICOLON) {
+        parser_advance(parser);
+        report_error_at_token(ctx, parser_previous(parser), "Expected for loop initializer or ';'");
+        return NULL;
+    }
+
+    if (parser_advance(parser).type != SEMICOLON) {
+        report_unexpected_token(ctx, parser_previous(parser), ";");
+        return NULL;
+    }
+
+    ast_node_t *condition = parser_parse_expression(ctx, parser);
+
+    if (!condition && parser_peek(parser).type != SEMICOLON) {
+        parser_advance(parser);
+        report_error_at_token(ctx, parser_previous(parser), "Expected for loop condition or ';'");
+        return NULL;
+    }
+
+    if (parser_advance(parser).type != SEMICOLON) {
+        report_unexpected_token(ctx, parser_previous(parser), ";");
+        return NULL;
+    }
+
+    ast_node_t *increment = parser_parse_expression(ctx, parser);
+
+    if (parser_advance(parser).type != RIGHT_PAREN) {
+        report_error_at_token(ctx, left_paren_tok, "Expected closing parenthesis");
+        return NULL;
+    }
+
+    ast_node_t *body = parser_parse_statement(ctx, parser);
+
+    if (!body) {
+        report_error_at_token(ctx, parser_previous(parser), "Expected body after 'for'");
+        return NULL;
+    }
+
+    return parser_create_node(ctx->arena, NODE_FOR,
+                              (node_value_t){ .for_stmt = { .initializer = initializer,
+                                                            .condition = condition,
+                                                            .increment = increment,
+                                                            .body = body,
+                              } },
+                              tok.cursor, body->end);
 }
 
 ast_node_t *parser_parse_print_stmt(context_t *ctx, parser_t *parser)
@@ -2204,13 +2290,18 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         return create_statement_value();
     }
     case NODE_VAR: {
-        if (node->value.var_decl.expression->type == NODE_UNINITIALIZED)
-            return create_uninitialized_value();
-
         const char *identifier = node->value.var_decl.identifier->value.identifier.name;
-        value_t value = interpret(ctx, node->value.var_decl.expression, env);
+        value_t uninitialized_value = create_uninitialized_value();
 
-        if (set_var_entry(ctx->arena, &env->pool, identifier, value) != 0)
+        if (node->value.var_decl.expression->type == NODE_UNINITIALIZED) {
+            if (set_var_entry(ctx->arena, &env->pool, identifier, uninitialized_value) != 0)
+                return create_error_value();
+
+            return uninitialized_value;
+        }
+
+        if (set_var_entry(ctx->arena, &env->pool, identifier,
+                          interpret(ctx, node->value.var_decl.expression, env)) != 0)
             return create_error_value();
 
         return create_statement_value();
@@ -2262,8 +2353,38 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         assert(node->value.while_stmt.condition);
         assert(node->value.while_stmt.body);
 
-        while (is_truthy(interpret(ctx, node->value.while_stmt.condition, env)))
+        // TODO(fcasibu): maybe falsy value for VALUE_ERROR?
+        while (!had_runtime_error &&
+               is_truthy(interpret(ctx, node->value.while_stmt.condition, env)))
             interpret(ctx, node->value.while_stmt.body, env);
+
+        return create_statement_value();
+    };
+
+    case NODE_FOR: {
+        assert(node->value.for_stmt.body);
+        ast_node_t *condition = node->value.for_stmt.condition;
+
+        environment_t *local_env = create_env(ctx->arena, env);
+        arena_da_append(ctx->arena, env, local_env);
+
+        if (node->value.for_stmt.initializer)
+            interpret(ctx, node->value.for_stmt.initializer, local_env);
+
+        while (!had_runtime_error &&
+               (condition ? is_truthy(interpret(ctx, condition, local_env)) : true)) {
+            if (node->value.for_stmt.body->type == NODE_BLOCK) {
+                ast_node_t **declarations = node->value.for_stmt.body->value.block.declarations;
+                usize size = node->value.for_stmt.body->value.block.size;
+
+                run_declarations(ctx, declarations, size, local_env);
+            } else {
+                interpret(ctx, node->value.for_stmt.body, local_env);
+            }
+
+            if (node->value.for_stmt.increment)
+                interpret(ctx, node->value.for_stmt.increment, local_env);
+        }
 
         return create_statement_value();
     };
