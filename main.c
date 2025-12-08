@@ -41,7 +41,7 @@ typedef enum {
     // clang-format off
     NODE_NUMBER, NODE_STRING, NODE_BOOL, NODE_NIL, NODE_UNARY, NODE_BINARY,
     NODE_PROGRAM, NODE_IDENTIFIER, NODE_TERNARY, NODE_PRINT, NODE_VAR,
-    NODE_ASSIGN, NODE_BLOCK, NODE_IF, NODE_UNINITIALIZED
+    NODE_ASSIGN, NODE_BLOCK, NODE_IF, NODE_WHILE, NODE_UNINITIALIZED
     // clang-format on
 } node_type_t;
 
@@ -134,6 +134,11 @@ typedef union {
         struct ast_node *then_branch;
         struct ast_node *else_branch;
     } if_stmt;
+
+    struct {
+        struct ast_node *condition;
+        struct ast_node *body;
+    } while_stmt;
 
     struct {
         struct ast_node *identifier;
@@ -259,6 +264,7 @@ ast_node_t *parser_parse_var_declaration(context_t *ctx, parser_t *parser);
 ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser);
 ast_node_t *parser_parse_block(context_t *ctx, parser_t *parser);
 ast_node_t *parser_parse_if_stmt(context_t *ctx, parser_t *parser);
+ast_node_t *parser_parse_while_stmt(context_t *ctx, parser_t *parser);
 ast_node_t *parser_parse_print_stmt(context_t *ctx, parser_t *parser);
 ast_node_t *parser_parse_expression(context_t *ctx, parser_t *parser);
 ast_node_t *parser_parse_assignment(context_t *ctx, parser_t *parser);
@@ -641,6 +647,10 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
     token_t tok = parser_peek(parser);
 
     switch (tok.type) {
+    case WHILE: {
+        return parser_parse_while_stmt(ctx, parser);
+    }
+
     case IF: {
         return parser_parse_if_stmt(ctx, parser);
     }
@@ -740,7 +750,7 @@ ast_node_t *parser_parse_if_stmt(context_t *ctx, parser_t *parser)
     ast_node_t *then_branch = parser_parse_statement(ctx, parser);
 
     if (!then_branch) {
-        report_error_at_token(ctx, parser_previous(parser), "Expected statement after 'if (cond) ");
+        report_error_at_token(ctx, parser_previous(parser), "Expected statement after 'if (cond)'");
         return NULL;
     }
 
@@ -765,6 +775,48 @@ ast_node_t *parser_parse_if_stmt(context_t *ctx, parser_t *parser)
                                               } },
                                 tok.cursor,
                                 else_branch ? else_branch->end : then_branch->end
+                              );
+}
+
+ast_node_t *parser_parse_while_stmt(context_t *ctx, parser_t *parser)
+{
+    token_t tok = parser_advance(parser);
+    assert(tok.type == WHILE);
+
+    token_t left_paren_tok = parser_advance(parser);
+    if (left_paren_tok.type != LEFT_PAREN) {
+        report_unexpected_token(ctx, parser_previous(parser), "(");
+        return NULL;
+    }
+
+    ast_node_t *condition = parser_parse_expression(ctx, parser);
+
+    if (!condition) {
+        report_error_at_token(ctx, parser_previous(parser),
+                              "Expected if statement condition within parentheses");
+        return NULL;
+    }
+
+    if (parser_advance(parser).type != RIGHT_PAREN) {
+        report_error_at_token(ctx, left_paren_tok, "Expected closing parenthesis");
+        return NULL;
+    }
+
+    ast_node_t *then_branch = parser_parse_statement(ctx, parser);
+
+    if (!then_branch) {
+        report_error_at_token(ctx, parser_previous(parser),
+                              "Expected statement after 'while (cond)'");
+        return NULL;
+    }
+
+    return parser_create_node(ctx->arena, NODE_WHILE,
+                              (node_value_t){ .while_stmt = {
+                                                  .condition = condition,
+                                                  .body = then_branch,
+                                              } },
+                                tok.cursor,
+                                then_branch->end
                               );
 }
 
@@ -2202,6 +2254,16 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         } else if (node->value.if_stmt.else_branch) {
             interpret(ctx, node->value.if_stmt.else_branch, env);
         }
+
+        return create_statement_value();
+    };
+
+    case NODE_WHILE: {
+        assert(node->value.while_stmt.condition);
+        assert(node->value.while_stmt.body);
+
+        while (is_truthy(interpret(ctx, node->value.while_stmt.condition, env)))
+            interpret(ctx, node->value.while_stmt.body, env);
 
         return create_statement_value();
     };
