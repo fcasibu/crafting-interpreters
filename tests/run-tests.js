@@ -61,9 +61,19 @@ async function runTest(testFile) {
   }
 
   const actualLines = stdout.split("\n").filter((line) => line.length);
+  let lastIndex = 0;
   const hasExpectedErrorLines = expectedLines.every((line) => {
-    return stderr.toLowerCase().includes(line.trim().toLowerCase());
+    const lowerStderr = stderr.toLowerCase();
+    const trimmedLine = line.trim().toLowerCase();
+
+    const idx = lowerStderr.indexOf(trimmedLine, lastIndex);
+    if (idx === -1) return false;
+
+    lastIndex = idx + trimmedLine.length;
+    return true;
   });
+
+    console.log(expectedLines, stderr);
 
   const isExpectedParseError =
     exitCode === EX_DATAERR && expectedLines.length !== 0 && hasExpectedErrorLines;

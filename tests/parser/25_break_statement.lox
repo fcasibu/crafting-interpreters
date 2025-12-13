@@ -1,0 +1,5 @@
+if (true) break;
+print break;
+{
+    break;
+}

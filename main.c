@@ -42,7 +42,7 @@ typedef enum {
     // clang-format off
     NODE_NUMBER, NODE_STRING, NODE_BOOL, NODE_NIL, NODE_UNARY, NODE_BINARY,
     NODE_PROGRAM, NODE_IDENTIFIER, NODE_TERNARY, NODE_PRINT, NODE_VAR,
-    NODE_ASSIGN, NODE_BLOCK, NODE_IF, NODE_WHILE, NODE_FOR,
+    NODE_ASSIGN, NODE_BLOCK, NODE_IF, NODE_WHILE, NODE_FOR, NODE_BREAK,
     NODE_UNINITIALIZED
     // clang-format on
 } node_type_t;
@@ -189,6 +189,8 @@ typedef struct {
 
     ast_node_t *root;
     usize current_index;
+
+    token_type_t current_context;
 } parser_t;
 
 static const struct {
@@ -237,11 +239,13 @@ typedef struct {
 } var_pool_t;
 
 typedef struct environment {
-    var_pool_t pool;
     struct environment **items;
+    struct environment *parent_env;
+    var_pool_t pool;
     usize size;
     usize capacity;
-    struct environment *parent_env;
+    node_type_t type;
+    bool done; // TODO(fcasibu): used for break statement, still figuring out how to do this better
 } environment_t;
 
 typedef struct {
@@ -526,6 +530,7 @@ void run(context_t *ctx)
     parser_t parser = { 0 };
     parser.tokens = lexer.tokens.items;
     parser.tokens_size = lexer.tokens.size;
+    parser.current_context = 0;
     parser_parse(ctx, &parser);
 
     if (had_error)
@@ -542,10 +547,11 @@ void run_declarations(context_t *ctx, ast_node_t **declarations, usize size, env
 {
     for (usize i = 0; i < size; ++i) {
         value_t value = interpret(ctx, declarations[i], env);
+        if (env->done) break;
 
         if (value.type == VALUE_ERROR) {
             had_runtime_error = true;
-            return;
+            break;
         }
 
         if (value.is_statement || declarations[i]->type == NODE_ASSIGN)
@@ -580,6 +586,7 @@ void parser_parse(context_t *ctx, parser_t *parser)
     arena_da_init(ctx->arena, &prog_declarations);
 
     while (parser->current_index < parser->tokens_size && !parser_is_eof(parser)) {
+        parser->current_context = 0;
         ast_node_t *node = parser_parse_declaration(ctx, parser);
 
         if (!node)
@@ -604,9 +611,9 @@ ast_node_t *parser_parse_declaration(context_t *ctx, parser_t *parser)
     case VAR: {
         ast_node_t *node = parser_parse_var_declaration(ctx, parser);
 
-        if (parser_advance(parser).type != SEMICOLON)
-            report_error_at_token(ctx, parser_previous(parser),
-                                  "Expected ';' at the end of 'var' declaration");
+        if (!parser_match(parser, 1, SEMICOLON)) {
+            report_error_at_token(ctx, parser_previous(parser), "Expected ';' at the end of 'var' declaration");
+        } else parser_advance(parser);
 
         return node;
     }
@@ -660,15 +667,28 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
     switch (tok.type) {
     case BREAK: {
         parser_advance(parser);
-        TODO("Not yet implemented 'break'");
+
+        if (parser->current_context != FOR && parser->current_context != WHILE)
+            report_error_at_token(ctx, parser_previous(parser), "Syntax Error: Invalid break statement");
+
+        if (parser_advance(parser).type != SEMICOLON)
+            report_unexpected_token(ctx, parser_previous(parser), ";");
+
+        return parser_create_node(ctx->arena, NODE_BREAK, (node_value_t){}, tok.cursor, tok.cursor);
     }
 
     case FOR: {
-        return parser_parse_for_stmt(ctx, parser);
+        parser->current_context = tok.type;
+        ast_node_t *node = parser_parse_for_stmt(ctx, parser);
+
+        return node;
     }
 
     case WHILE: {
-        return parser_parse_while_stmt(ctx, parser);
+        parser->current_context = tok.type;
+        ast_node_t *node = parser_parse_while_stmt(ctx, parser);
+
+        return node;
     }
 
     case IF: {
@@ -685,8 +705,9 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
     case PRINT: {
         ast_node_t *node = parser_parse_print_stmt(ctx, parser);
 
-        if (parser_advance(parser).type != SEMICOLON)
-            report_unexpected_token(ctx, parser_previous(parser), ";");
+        if (!parser_match(parser, 1, SEMICOLON)) {
+            report_error_at_token(ctx, parser_previous(parser), "Expected ';' after");
+        } else parser_advance(parser);
 
         return node;
     }
@@ -698,13 +719,15 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
     default: {
         ast_node_t *node = parser_parse_expression(ctx, parser);
 
+
         if (!node) {
             parser_synchronize(parser);
             return NULL;
         }
 
-        if (parser_advance(parser).type != SEMICOLON)
+        if (!parser_match(parser, 1, SEMICOLON)) {
             report_error_at_token(ctx, parser_previous(parser), "Expected ';' after");
+        } else parser_advance(parser);
 
         return node;
     }
@@ -1841,6 +1864,7 @@ void parser_synchronize(parser_t *parser)
         case FOR:
         case IF:
         case WHILE:
+        case BREAK:
         case PRINT:
         case RETURN:
             return;
@@ -2353,10 +2377,14 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         assert(node->value.while_stmt.condition);
         assert(node->value.while_stmt.body);
 
+        environment_t *local_env = create_env(ctx->arena, env);
+        local_env->type = node->type;
+        arena_da_append(ctx->arena, env, local_env);
+
         // TODO(fcasibu): maybe falsy value for VALUE_ERROR?
-        while (!had_runtime_error &&
-               is_truthy(interpret(ctx, node->value.while_stmt.condition, env)))
-            interpret(ctx, node->value.while_stmt.body, env);
+        while (!local_env->done && !had_runtime_error &&
+               is_truthy(interpret(ctx, node->value.while_stmt.condition, local_env)))
+            interpret(ctx, node->value.while_stmt.body, local_env);
 
         return create_statement_value();
     };
@@ -2366,12 +2394,13 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         ast_node_t *condition = node->value.for_stmt.condition;
 
         environment_t *local_env = create_env(ctx->arena, env);
+        local_env->type = node->type;
         arena_da_append(ctx->arena, env, local_env);
 
         if (node->value.for_stmt.initializer)
             interpret(ctx, node->value.for_stmt.initializer, local_env);
 
-        while (!had_runtime_error &&
+        while (!local_env->done && !had_runtime_error &&
                (condition ? is_truthy(interpret(ctx, condition, local_env)) : true)) {
             if (node->value.for_stmt.body->type == NODE_BLOCK) {
                 ast_node_t **declarations = node->value.for_stmt.body->value.block.declarations;
@@ -2388,6 +2417,23 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
         return create_statement_value();
     };
+
+    case NODE_BREAK: {
+        environment_t *current = env;
+
+        while (current) {
+            if (current->type == NODE_FOR || current->type == NODE_WHILE) {
+                current->done = true;
+                break; 
+            }
+
+            current = current->parent_env;
+        }
+
+        assert(current->type == NODE_FOR || current->type == NODE_WHILE);
+
+        return create_statement_value();
+    }
 
     default: {
         __builtin_unreachable();
@@ -2457,6 +2503,7 @@ environment_t *create_env(arena_t *arena, environment_t *parent)
     }
 
     env->parent_env = parent;
+    env->done = false;
     arena_da_init(arena, env);
 
     return env;
