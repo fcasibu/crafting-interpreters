@@ -49,10 +49,14 @@ typedef enum {
 
 typedef enum {
     // clang-format off
-    VALUE_NUMBER, VALUE_STRING, VALUE_BOOL, VALUE_NIL,
-    VALUE_ERROR, VALUE_UNINITIALIZED
+    VALUE_NUMBER = 1, VALUE_STRING, VALUE_BOOL, VALUE_NIL,
+    VALUE_UNINITIALIZED
     // clang-format on
 } value_type_t;
+
+typedef enum {
+    EVAL_OK, EVAL_BREAK, EVAL_ERROR
+} eval_type_t;
 
 typedef union {
     double number;
@@ -63,8 +67,12 @@ typedef union {
 typedef struct {
     value_type_t type;
     value_data_t value;
-    bool is_statement;
 } value_t;
+
+typedef struct {
+    eval_type_t type;
+    value_t data;
+} eval_result_t;
 
 typedef struct {
     token_type_t type;
@@ -190,7 +198,7 @@ typedef struct {
     ast_node_t *root;
     usize current_index;
 
-    token_type_t current_context;
+    usize loop_depth;
 } parser_t;
 
 static const struct {
@@ -244,8 +252,6 @@ typedef struct environment {
     var_pool_t pool;
     usize size;
     usize capacity;
-    node_type_t type;
-    bool done; // TODO(fcasibu): used for break statement, still figuring out how to do this better
 } environment_t;
 
 typedef struct {
@@ -254,6 +260,7 @@ typedef struct {
     const char *source;
     const char *source_filename;
     usize source_len;
+    const char *cmd;
 } context_t;
 
 void lexer_tokenize(context_t *ctx, lexer_t *lexer);
@@ -306,14 +313,16 @@ bool parser_match(parser_t *parser, usize count, ...);
 void parser_synchronize(parser_t *parser);
 
 bool interpret_comparison(token_type_t op, value_t a, value_t b);
-value_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *env);
-value_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *env);
-value_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *env);
-value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env);
+eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *env);
+eval_result_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *env);
+eval_result_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *env);
+eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env);
+eval_result_t create_eval_ok(void);
+eval_result_t create_eval_error(void);
+eval_result_t create_eval_break(void);
+eval_result_t create_eval_result(eval_type_t type, value_t value);
 value_t create_value(value_type_t type, value_data_t value);
-value_t create_statement_value(void);
 value_t create_uninitialized_value(void);
-value_t create_error_value(void);
 
 bool is_truthy(value_t value);
 bool is_equal(value_t a, value_t b);
@@ -328,7 +337,7 @@ void report_runtime(usize line_idx, usize col_idx, const char *source_filename, 
 void report_unexpected_token(context_t *ctx, token_t tok, const char *expected);
 void report_error_at_token(context_t *ctx, token_t tok, const char *error_msg);
 void run(context_t *ctx);
-void run_declarations(context_t *ctx, ast_node_t **declarations, usize size, environment_t *env);
+eval_result_t run_declarations(context_t *ctx, ast_node_t **declarations, usize size, environment_t *env);
 const char *intern(arena_t *arena, const char *s);
 err set_var_entry(arena_t *arena, var_pool_t *pool, const char *s, value_t value);
 var_pool_entry_t *get_var_entry(var_pool_t *pool, const char *s);
@@ -472,19 +481,26 @@ void print_ast(ast_node_t *node, usize indent)
 
 int main(int argc, char **argv)
 {
-    if (argc < 2) {
-        LOG(LOG_ERROR, "%s", "No input files");
+    if (argc < 3) {
+        LOG(LOG_ERROR, "%s", "Usage: ./lox run file.lox");
         return 1;
     }
 
-    usize file_name_len = strlen(argv[1]);
+    if (strcmp(argv[1], "run") != 0 && strcmp(argv[1], "test") != 0) {
+        LOG(LOG_ERROR, "%s", "Invalid command. Use `run` or `test`");
+        return 1;
+    }
+
+    // TODO(fcasibu): implement better cli parsing later
+
+    usize file_name_len = strlen(argv[2]);
     if (file_name_len < LANG_NAME_LEN ||
-        strcmp(argv[1] + file_name_len - LANG_NAME_LEN, LANG_NAME) != 0) {
-        LOG(LOG_ERROR, "Invalid source file '%s'", argv[1]);
+        strcmp(argv[2] + file_name_len - LANG_NAME_LEN, LANG_NAME) != 0) {
+        LOG(LOG_ERROR, "Invalid source file '%s'", argv[2]);
         return 1;
     }
 
-    const char *source_filename = argv[1];
+    const char *source_filename = argv[2];
 
     arena_t arena = { 0 };
     if (!arena_create(&arena, (usize)ARENA_SIZE)) {
@@ -505,6 +521,7 @@ int main(int argc, char **argv)
         .source = source,
         .arena = &arena,
         .source_len = strlen(source),
+        .cmd = argv[1]
     };
 
     run(&ctx);
@@ -530,7 +547,7 @@ void run(context_t *ctx)
     parser_t parser = { 0 };
     parser.tokens = lexer.tokens.items;
     parser.tokens_size = lexer.tokens.size;
-    parser.current_context = 0;
+    parser.loop_depth = 0;
     parser_parse(ctx, &parser);
 
     if (had_error)
@@ -543,31 +560,32 @@ void run(context_t *ctx)
     // print_ast(parser.root, 0);
 }
 
-void run_declarations(context_t *ctx, ast_node_t **declarations, usize size, environment_t *env)
+eval_result_t run_declarations(context_t *ctx, ast_node_t **declarations, usize size, environment_t *env)
 {
     for (usize i = 0; i < size; ++i) {
-        value_t value = interpret(ctx, declarations[i], env);
-        if (env->done) break;
+        eval_result_t result = interpret(ctx, declarations[i], env);
 
-        if (value.type == VALUE_ERROR) {
+        if (result.type == EVAL_ERROR) {
             had_runtime_error = true;
-            break;
+            return result;
         }
 
-        if (value.is_statement || declarations[i]->type == NODE_ASSIGN)
-            continue;
+        if(result.type == EVAL_BREAK)
+            return result;
 
-        switch (value.type) {
+        if (declarations[i]->type == NODE_ASSIGN || strcmp(ctx->cmd, "run") == 0) continue;
+
+        switch (result.data.type) {
         case VALUE_NUMBER: {
-            printf("%g\n", value.value.number);
+            printf("%g\n", result.data.value.number);
 
         } break;
         case VALUE_BOOL: {
-            printf("%s\n", value.value.boolean ? "true" : "false");
+            printf("%s\n", result.data.value.boolean ? "true" : "false");
 
         } break;
         case VALUE_STRING: {
-            printf("%s\n", value.value.string);
+            printf("%s\n", result.data.value.string);
 
         } break;
         case VALUE_NIL: {
@@ -578,6 +596,8 @@ void run_declarations(context_t *ctx, ast_node_t **declarations, usize size, env
             break;
         }
     }
+
+    return create_eval_ok();
 }
 
 void parser_parse(context_t *ctx, parser_t *parser)
@@ -586,7 +606,6 @@ void parser_parse(context_t *ctx, parser_t *parser)
     arena_da_init(ctx->arena, &prog_declarations);
 
     while (parser->current_index < parser->tokens_size && !parser_is_eof(parser)) {
-        parser->current_context = 0;
         ast_node_t *node = parser_parse_declaration(ctx, parser);
 
         if (!node)
@@ -668,7 +687,7 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
     case BREAK: {
         parser_advance(parser);
 
-        if (parser->current_context != FOR && parser->current_context != WHILE)
+        if (parser->loop_depth == 0)
             report_error_at_token(ctx, parser_previous(parser), "Syntax Error: Invalid break statement");
 
         if (parser_advance(parser).type != SEMICOLON)
@@ -678,15 +697,17 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
     }
 
     case FOR: {
-        parser->current_context = tok.type;
+        parser->loop_depth += 1;
         ast_node_t *node = parser_parse_for_stmt(ctx, parser);
+        parser->loop_depth -= 1;
 
         return node;
     }
 
     case WHILE: {
-        parser->current_context = tok.type;
+        parser->loop_depth += 1;
         ast_node_t *node = parser_parse_while_stmt(ctx, parser);
+        parser->loop_depth -= 1;
 
         return node;
     }
@@ -2031,8 +2052,6 @@ const char *stringify_value(arena_t *arena, value_t value)
         return number_to_string(arena, value.value.number);
     case VALUE_NIL:
         return "nil";
-    case VALUE_ERROR:
-        return "";
     case VALUE_STRING:
         return value.value.string;
     case VALUE_UNINITIALIZED:
@@ -2103,112 +2122,112 @@ bool interpret_comparison(token_type_t op, value_t a, value_t b)
     }
 }
 
-value_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *env)
+eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *env)
 {
     assert(node->type == NODE_BINARY);
 
     switch (node->value.binary.op.type) {
     case OR: {
-        value_t left = interpret(ctx, node->value.binary.left, env);
-        value_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        return is_truthy(left) ? left : right;
+        return is_truthy(left.data) ? left : right;
     }
 
     case AND: {
-        value_t left = interpret(ctx, node->value.binary.left, env);
-        value_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        return is_truthy(left) ? right : left;
+        return is_truthy(left.data) ? right : left;
     }
 
     case EQUAL_EQUAL: {
-        value_t left = interpret(ctx, node->value.binary.left, env);
-        value_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        return create_value(VALUE_BOOL, (value_data_t){ .boolean = is_equal(left, right) });
+        return create_eval_result(EVAL_OK, create_value(VALUE_BOOL, (value_data_t){ .boolean = is_equal(left.data, right.data) }));
     }
 
     case BANG_EQUAL: {
-        value_t left = interpret(ctx, node->value.binary.left, env);
-        value_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        return create_value(VALUE_BOOL, (value_data_t){ .boolean = !is_equal(left, right) });
+        return create_eval_result(EVAL_OK, create_value(VALUE_BOOL, (value_data_t){ .boolean = !is_equal(left.data, right.data) }));
     }
 
     case LESS:
     case LESS_EQUAL:
     case GREATER:
     case GREATER_EQUAL: {
-        value_t left = interpret(ctx, node->value.binary.left, env);
-        value_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        if (!check_number_operands(ctx, node->value.binary.op, left, right))
-            return create_error_value();
+        if (!check_number_operands(ctx, node->value.binary.op, left.data, right.data))
+            return create_eval_error();
 
-        return create_value(
+        return create_eval_result(EVAL_OK, create_value(
             VALUE_BOOL, (value_data_t){ .boolean = interpret_comparison(node->value.binary.op.type,
-                                                                        left, right) });
+                                                                        left.data, right.data) }));
     }
 
     case PLUS: {
-        value_t left = interpret(ctx, node->value.binary.left, env);
-        value_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        if (left.type == VALUE_STRING || right.type == VALUE_STRING) {
-            const char *left_str = stringify_value(ctx->arena, left);
-            const char *right_str = stringify_value(ctx->arena, right);
+        if (left.data.type == VALUE_STRING || right.data.type == VALUE_STRING) {
+            const char *left_str = stringify_value(ctx->arena, left.data);
+            const char *right_str = stringify_value(ctx->arena, right.data);
 
-            return create_value(VALUE_STRING,
+            return create_eval_result(EVAL_OK, create_value(VALUE_STRING,
                                 (value_data_t){
                                     .string = concat_str(ctx->arena, left_str, right_str),
-                                });
+                                }));
         }
 
-        if (!check_number_operands(ctx, node->value.binary.op, left, right))
-            return create_error_value();
+        if (!check_number_operands(ctx, node->value.binary.op, left.data, right.data))
+            return create_eval_error();
 
-        return create_value(VALUE_NUMBER,
-                            (value_data_t){ .number = left.value.number + right.value.number });
+        return create_eval_result(EVAL_OK, create_value(VALUE_NUMBER,
+                            (value_data_t){ .number = left.data.value.number + right.data.value.number }));
     }
     case MINUS: {
-        value_t left = interpret(ctx, node->value.binary.left, env);
-        value_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        if (!check_number_operands(ctx, node->value.binary.op, left, right))
-            return create_error_value();
+        if (!check_number_operands(ctx, node->value.binary.op, left.data, right.data))
+            return create_eval_error();
 
-        return create_value(VALUE_NUMBER,
-                            (value_data_t){ .number = left.value.number - right.value.number });
+        return create_eval_result(EVAL_OK, create_value(VALUE_NUMBER,
+                            (value_data_t){ .number = left.data.value.number - right.data.value.number }));
     }
 
     case STAR: {
-        value_t left = interpret(ctx, node->value.binary.left, env);
-        value_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        if (!check_number_operands(ctx, node->value.binary.op, left, right))
-            return create_error_value();
+        if (!check_number_operands(ctx, node->value.binary.op, left.data, right.data))
+            return create_eval_error();
 
-        return create_value(VALUE_NUMBER,
-                            (value_data_t){ .number = left.value.number * right.value.number });
+        return create_eval_result(EVAL_OK, create_value(VALUE_NUMBER,
+                            (value_data_t){ .number = left.data.value.number * right.data.value.number }));
     }
 
     case SLASH: {
-        value_t left = interpret(ctx, node->value.binary.left, env);
-        value_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        if (!check_number_operands(ctx, node->value.binary.op, left, right))
-            return create_error_value();
+        if (!check_number_operands(ctx, node->value.binary.op, left.data, right.data))
+            return create_eval_error();
 
-        if (right.value.number == 0.0) {
+        if (right.data.value.number == 0.0) {
             token_t tok = node->value.binary.op;
             report_runtime(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source,
                            tok.line_start, "Division by zero.");
-            return create_error_value();
+            return create_eval_error();
         }
 
-        return create_value(VALUE_NUMBER,
-                            (value_data_t){ .number = left.value.number / right.value.number });
+        return create_eval_result(EVAL_OK, create_value(VALUE_NUMBER,
+                            (value_data_t){ .number = left.data.value.number / right.data.value.number }));
     }
 
     case COMMA: {
@@ -2222,29 +2241,29 @@ value_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *env)
     }
 }
 
-value_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *env)
+eval_result_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *env)
 {
     switch (node->value.unary.op.type) {
     case BANG: {
-        return create_value(
+        return create_eval_result(EVAL_OK, create_value(
             VALUE_BOOL,
-            (value_data_t){ .boolean = !is_truthy(interpret(ctx, node->value.unary.child, env)) });
+            (value_data_t){ .boolean = !is_truthy(interpret(ctx, node->value.unary.child, env).data) }));
     }
 
     case MINUS: {
-        value_t child = interpret(ctx, node->value.unary.child, env);
-        if (!check_number_operand(ctx, node->value.unary.op, child))
-            return create_error_value();
+        eval_result_t child = interpret(ctx, node->value.unary.child, env);
+        if (!check_number_operand(ctx, node->value.unary.op, child.data))
+            return create_eval_error();
 
-        return create_value(VALUE_NUMBER, (value_data_t){ .number = -child.value.number });
+        return create_eval_result(EVAL_OK, create_value(VALUE_NUMBER, (value_data_t){ .number = -child.data.value.number }));
     }
 
     case PLUS: {
-        value_t child = interpret(ctx, node->value.unary.child, env);
-        if (!check_number_operand(ctx, node->value.unary.op, child))
-            return create_error_value();
+        eval_result_t child = interpret(ctx, node->value.unary.child, env);
+        if (!check_number_operand(ctx, node->value.unary.op, child.data))
+            return create_eval_error();
 
-        return create_value(VALUE_NUMBER, (value_data_t){ .number = +child.value.number });
+        return create_eval_result(EVAL_OK, create_value(VALUE_NUMBER, (value_data_t){ .number = +child.data.value.number }));
     }
 
     default: {
@@ -2253,31 +2272,31 @@ value_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *env)
     }
 }
 
-value_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *env)
+eval_result_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *env)
 {
-    bool condition = is_truthy(interpret(ctx, node->value.ternary.condition, env));
+    bool condition = is_truthy(interpret(ctx, node->value.ternary.condition, env).data);
     if (condition)
         return interpret(ctx, node->value.ternary.true_branch, env);
 
     return interpret(ctx, node->value.ternary.false_branch, env);
 }
 
-value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
+eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 {
     assert(node);
 
     switch (node->type) {
     case NODE_NUMBER:
-        return create_value(VALUE_NUMBER, (value_data_t){ .number = node->value.literal.number });
+        return create_eval_result(EVAL_OK, create_value(VALUE_NUMBER, (value_data_t){ .number = node->value.literal.number }));
 
     case NODE_STRING:
-        return create_value(VALUE_STRING, (value_data_t){ .string = node->value.literal.string });
+        return create_eval_result(EVAL_OK, create_value(VALUE_STRING, (value_data_t){ .string = node->value.literal.string }));
 
     case NODE_BOOL:
-        return create_value(VALUE_BOOL, (value_data_t){ .boolean = node->value.literal.boolean });
+        return create_eval_result(EVAL_OK, create_value(VALUE_BOOL, (value_data_t){ .boolean = node->value.literal.boolean }));
 
     case NODE_NIL:
-        return create_value(VALUE_NIL, (value_data_t){});
+        return create_eval_result(EVAL_OK, create_value(VALUE_NIL, (value_data_t){}));
 
     case NODE_IDENTIFIER: {
         var_pool_entry_t *entry = get_var_in_scope(env, node->value.identifier.name);
@@ -2286,16 +2305,16 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         if (!entry) {
             report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
                            loc.line_start, "Variable is not defined");
-            return create_error_value();
+            return create_eval_error();
         }
 
         if (entry->value.type == VALUE_UNINITIALIZED) {
             report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
                            loc.line_start, "Uninitialized variable");
-            return create_error_value();
+            return create_eval_error();
         }
 
-        return entry->value;
+        return create_eval_result(EVAL_OK, entry->value);
     }
 
     case NODE_BINARY:
@@ -2309,9 +2328,9 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
     case NODE_PRINT: {
         printf("%s\n",
-               stringify_value(ctx->arena, interpret(ctx, node->value.print_stmt.expression, env)));
+               stringify_value(ctx->arena, interpret(ctx, node->value.print_stmt.expression, env).data));
 
-        return create_statement_value();
+        return create_eval_ok();
     }
     case NODE_VAR: {
         const char *identifier = node->value.var_decl.identifier->value.identifier.name;
@@ -2319,16 +2338,16 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
         if (node->value.var_decl.expression->type == NODE_UNINITIALIZED) {
             if (set_var_entry(ctx->arena, &env->pool, identifier, uninitialized_value) != 0)
-                return create_error_value();
+                return create_eval_error();
 
-            return uninitialized_value;
+            return create_eval_ok();
         }
 
         if (set_var_entry(ctx->arena, &env->pool, identifier,
-                          interpret(ctx, node->value.var_decl.expression, env)) != 0)
-            return create_error_value();
+                          interpret(ctx, node->value.var_decl.expression, env).data) != 0)
+            return create_eval_error();
 
-        return create_statement_value();
+        return create_eval_ok();
     }
     case NODE_ASSIGN: {
         const char *var_name = node->value.assign.identifier->value.identifier.name;
@@ -2338,12 +2357,14 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         if (!var_entry) {
             report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
                            loc.line_start, "Use of undeclared identifier");
-            return create_error_value();
+            return create_eval_error();
         }
 
-        value_t value = interpret(ctx, node->value.assign.expression, env);
-        if (set_var_in_scope(ctx->arena, env, var_name, value) != 0)
-            return create_error_value();
+        eval_result_t value = interpret(ctx, node->value.assign.expression, env);
+        if (set_var_in_scope(ctx->arena, env, var_name, value.data) != 0)
+            return create_eval_error();
+
+        assert(value.type == EVAL_OK);
 
         return value;
     }
@@ -2352,41 +2373,44 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         environment_t *local_env = create_env(ctx->arena, env);
         arena_da_append(ctx->arena, env, local_env);
 
-        run_declarations(ctx, node->value.block.declarations, node->value.block.size, local_env);
+        eval_result_t result = run_declarations(ctx, node->value.block.declarations, node->value.block.size, local_env);
+        if (result.type != EVAL_OK) return result;
 
-        return create_statement_value();
+        return create_eval_ok();
     };
 
     case NODE_IF: {
         assert(node->value.if_stmt.condition);
 
-        value_t condition = interpret(ctx, node->value.if_stmt.condition, env);
+        eval_result_t condition = interpret(ctx, node->value.if_stmt.condition, env);
 
-        if (is_truthy(condition)) {
+        if (is_truthy(condition.data)) {
             assert(node->value.if_stmt.then_branch);
 
-            interpret(ctx, node->value.if_stmt.then_branch, env);
+            eval_result_t result = interpret(ctx, node->value.if_stmt.then_branch, env);
+            if(result.type != EVAL_OK) return result;
         } else if (node->value.if_stmt.else_branch) {
-            interpret(ctx, node->value.if_stmt.else_branch, env);
+            eval_result_t result = interpret(ctx, node->value.if_stmt.else_branch, env);
+            if(result.type != EVAL_OK) return result;
         }
 
-        return create_statement_value();
+        return create_eval_ok();
     };
 
     case NODE_WHILE: {
         assert(node->value.while_stmt.condition);
         assert(node->value.while_stmt.body);
 
-        environment_t *local_env = create_env(ctx->arena, env);
-        local_env->type = node->type;
-        arena_da_append(ctx->arena, env, local_env);
+        while (is_truthy(interpret(ctx, node->value.while_stmt.condition, env).data)) {
+            eval_result_t result = interpret(ctx, node->value.while_stmt.body, env);
 
-        // TODO(fcasibu): maybe falsy value for VALUE_ERROR?
-        while (!local_env->done && !had_runtime_error &&
-               is_truthy(interpret(ctx, node->value.while_stmt.condition, local_env)))
-            interpret(ctx, node->value.while_stmt.body, local_env);
+            if (result.type == EVAL_BREAK)
+                break;
 
-        return create_statement_value();
+            if (result.type == EVAL_ERROR) return result;
+        }
+
+        return create_eval_ok();
     };
 
     case NODE_FOR: {
@@ -2394,45 +2418,28 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         ast_node_t *condition = node->value.for_stmt.condition;
 
         environment_t *local_env = create_env(ctx->arena, env);
-        local_env->type = node->type;
         arena_da_append(ctx->arena, env, local_env);
 
         if (node->value.for_stmt.initializer)
             interpret(ctx, node->value.for_stmt.initializer, local_env);
 
-        while (!local_env->done && !had_runtime_error &&
-               (condition ? is_truthy(interpret(ctx, condition, local_env)) : true)) {
-            if (node->value.for_stmt.body->type == NODE_BLOCK) {
-                ast_node_t **declarations = node->value.for_stmt.body->value.block.declarations;
-                usize size = node->value.for_stmt.body->value.block.size;
+        while ((condition ? is_truthy(interpret(ctx, condition, local_env).data) : true)) {
+            eval_result_t result = interpret(ctx, node->value.for_stmt.body, local_env);
 
-                run_declarations(ctx, declarations, size, local_env);
-            } else {
-                interpret(ctx, node->value.for_stmt.body, local_env);
-            }
+            if (result.type == EVAL_BREAK)
+                break;
+
+            if (result.type == EVAL_ERROR) return result;
 
             if (node->value.for_stmt.increment)
                 interpret(ctx, node->value.for_stmt.increment, local_env);
         }
 
-        return create_statement_value();
+        return create_eval_ok();
     };
 
     case NODE_BREAK: {
-        environment_t *current = env;
-
-        while (current) {
-            if (current->type == NODE_FOR || current->type == NODE_WHILE) {
-                current->done = true;
-                break; 
-            }
-
-            current = current->parent_env;
-        }
-
-        assert(current->type == NODE_FOR || current->type == NODE_WHILE);
-
-        return create_statement_value();
+        return create_eval_break();
     }
 
     default: {
@@ -2441,24 +2448,34 @@ value_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     }
 }
 
+eval_result_t create_eval_result(eval_type_t type, value_t value)
+{
+    return (eval_result_t){.type = type, .data = value };
+}
+
+eval_result_t create_eval_ok(void)
+{
+    return (eval_result_t){.type = EVAL_OK };
+}
+
+eval_result_t create_eval_error(void)
+{
+    return (eval_result_t){.type = EVAL_ERROR };
+}
+
+eval_result_t create_eval_break(void)
+{
+    return (eval_result_t){.type = EVAL_BREAK };
+}
+
 value_t create_value(value_type_t type, value_data_t value)
 {
     return (value_t){ .type = type, .value = value };
 }
 
-value_t create_statement_value(void)
-{
-    return (value_t){ .type = VALUE_NIL, .is_statement = true };
-}
-
 value_t create_uninitialized_value(void)
 {
     return (value_t){ .type = VALUE_UNINITIALIZED };
-}
-
-value_t create_error_value(void)
-{
-    return (value_t){ .type = VALUE_ERROR };
 }
 
 bool check_number_operand(context_t *ctx, token_t tok, value_t child)
@@ -2503,7 +2520,6 @@ environment_t *create_env(arena_t *arena, environment_t *parent)
     }
 
     env->parent_env = parent;
-    env->done = false;
     arena_da_init(arena, env);
 
     return env;

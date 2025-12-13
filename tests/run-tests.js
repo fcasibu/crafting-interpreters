@@ -49,7 +49,7 @@ async function runTest(testFile) {
   let exitCode = 0;
 
   try {
-    stdout = execFileSync(LOX_BINARY, [testFile], {
+    stdout = execFileSync(LOX_BINARY, ["test", testFile], {
       stdio: "pipe",
       encoding: "utf8",
       maxBuffer: 10 * 1024 * 1024,
@@ -72,8 +72,6 @@ async function runTest(testFile) {
     lastIndex = idx + trimmedLine.length;
     return true;
   });
-
-    console.log(expectedLines, stderr);
 
   const isExpectedParseError =
     exitCode === EX_DATAERR && expectedLines.length !== 0 && hasExpectedErrorLines;
