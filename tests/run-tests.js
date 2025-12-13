@@ -61,9 +61,12 @@ async function runTest(testFile) {
   }
 
   const actualLines = stdout.split("\n").filter((line) => line.length);
+  const hasExpectedErrorLines = expectedLines.every((line) => {
+    return stderr.toLowerCase().includes(line.trim().toLowerCase());
+  });
 
   const isExpectedParseError =
-    expectedLines.length === 0 && exitCode === EX_DATAERR;
+    exitCode === EX_DATAERR && expectedLines.length !== 0 && hasExpectedErrorLines;
   if (isExpectedParseError) {
     return {
       filename,
