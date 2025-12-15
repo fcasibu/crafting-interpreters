@@ -84,7 +84,7 @@ async function runTest(testFile) {
   }
 
   const isExpectedRuntimeError =
-    expectedLines.length === 0 && exitCode === EX_SOFTWARE;
+    exitCode === EX_SOFTWARE && expectedLines.length !== 0 && hasExpectedErrorLines;
   if (isExpectedRuntimeError) {
     return {
       filename,

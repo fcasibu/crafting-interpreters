@@ -1,0 +1,57 @@
+// fun
+fun add(a,b) { return a + b; }
+
+print add(2, 2); // 4
+
+// recursion
+fun fact(n) {
+    if (n <= 1) return 1;
+    return n * fact(n-1);
+}
+
+print fact(5); // 120
+
+// higher order function
+fun operate(value, operation) {
+  return operation(value);
+}
+
+fun square(x) {
+  return x * x;
+}
+
+print operate(5, square); // 25
+
+// passing as an expression 
+
+print operate(5, fun(x) { return x * x; }); // 25
+
+// closure
+fun make_counter() {
+    var count = 0;
+
+    fun inc() {
+        count = count + 1;
+        print count;
+    }
+
+    return inc;
+}
+
+var inc = make_counter();
+
+inc(); // 1
+inc(); // 2
+inc(); // 3
+inc(); // 4
+
+// multiple call syntax
+fun add(a) {
+    return fun(b) {
+        return fun(c) {
+            return a + b + c;
+        }
+    }
+}
+
+print add(1)(2)(3); // 6
