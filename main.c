@@ -267,11 +267,8 @@ typedef struct {
 } var_pool_t;
 
 typedef struct environment {
-    struct environment **items;
     struct environment *parent_env;
     var_pool_t pool;
-    usize size;
-    usize capacity;
 } environment_t;
 
 typedef struct {
@@ -437,7 +434,7 @@ int main(int argc, char **argv)
 void run(context_t *ctx)
 {
     lexer_t lexer = { 0 };
-    arena_da_init(ctx->arena, &lexer.tokens);
+    arena_da_init(ctx->arena, &lexer.tokens, 256);
 
     lexer_tokenize(ctx, &lexer);
 
@@ -502,7 +499,7 @@ eval_result_t run_declarations(context_t *ctx, ast_nodes_t *declarations, enviro
 void parser_parse(context_t *ctx, parser_t *parser)
 {
     ast_nodes_t *prog_declarations = arena_alloc(ctx->arena, sizeof(*prog_declarations));
-    arena_da_init(ctx->arena, prog_declarations);
+    arena_da_init(ctx->arena, prog_declarations, 256);
 
     while (parser->current_index < parser->tokens_size && !parser_is_eof(parser)) {
         ast_node_t *node = parser_parse_declaration(ctx, parser);
@@ -727,7 +724,7 @@ ast_node_t *parser_parse_block(context_t *ctx, parser_t *parser)
     }
 
     ast_nodes_t *block_declarations = arena_alloc(ctx->arena, sizeof(*block_declarations));
-    arena_da_init(ctx->arena, block_declarations);
+    arena_da_init(ctx->arena, block_declarations, 256);
 
     while (!parser_match(parser, 1, RIGHT_BRACE) && !parser_is_eof(parser)) {
         ast_node_t *node = parser_parse_declaration(ctx, parser);
@@ -1363,7 +1360,7 @@ ast_nodes_t *parser_parse_args(context_t *ctx, parser_t *parser)
         return NULL;
 
     ast_nodes_t *args = arena_alloc(ctx->arena, sizeof(*args));
-    arena_da_init(ctx->arena, args);
+    arena_da_init(ctx->arena, args, 256);
     arena_da_append(ctx->arena, args, node);
 
     while (!parser_is_eof(parser) && parser_match(parser, 1, COMMA)) {
@@ -1386,7 +1383,7 @@ ast_nodes_t *parser_parse_params(context_t *ctx, parser_t *parser)
         return NULL;
 
     ast_nodes_t *params = arena_alloc(ctx->arena, sizeof(*params));
-    arena_da_init(ctx->arena, params);
+    arena_da_init(ctx->arena, params, 256);
     arena_da_append(ctx->arena, params, node);
 
     while (!parser_is_eof(parser) && parser_match(parser, 1, COMMA)) {
@@ -2532,7 +2529,6 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
     case NODE_BLOCK: {
         environment_t *local_env = create_env(ctx->arena, env);
-        arena_da_append(ctx->arena, env, local_env);
 
         return run_declarations(ctx, node->value.block.declarations, local_env);
     };
@@ -2579,7 +2575,6 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         ast_node_t *condition = node->value.for_stmt.condition;
 
         environment_t *local_env = create_env(ctx->arena, env);
-        arena_da_append(ctx->arena, env, local_env);
 
         if (node->value.for_stmt.initializer)
             interpret(ctx, node->value.for_stmt.initializer, local_env);
@@ -2636,7 +2631,8 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
             return create_eval_error();
         }
 
-        environment_t *local_env = create_env(ctx->arena, callee_result.data.value.fun_def.closure);
+        environment_t *closure = callee_result.data.value.fun_def.closure;
+        environment_t *local_env = create_env(ctx->arena, closure);
 
         if (args) {
             for (usize i = 0; i < args->size; ++i) {
@@ -2739,7 +2735,6 @@ environment_t *create_env(arena_t *arena, environment_t *parent)
     }
 
     env->parent_env = parent;
-    arena_da_init(arena, env);
 
     return env;
 }

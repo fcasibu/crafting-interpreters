@@ -20,6 +20,7 @@ char *concat_str(arena_t *arena, const char *a, const char *b);
 #include <ctype.h>
 #include <errno.h>
 #include <stddef.h>
+#include <float.h>
 
 #define ARENA_IMPLEMENTATION
 #include "arena.h"
@@ -34,16 +35,17 @@ char *concat_str(arena_t *arena, const char *a, const char *b);
 
 char *number_to_string(arena_t *arena, double number)
 {
-    char buf[32];
-    int written = snprintf(buf, sizeof(buf), "%g", number);
-    if (written < 0)
+    int needed = snprintf(NULL, 0, "%.*g", DBL_DECIMAL_DIG, number);
+    if (needed < 0)
         return NULL;
 
-    char *res = arena_alloc(arena, written + 1);
+    char *res = arena_alloc(arena, (size_t)needed + 1);
     if (!res)
         return NULL;
 
-    memcpy(res, buf, written + 1);
+    int written = snprintf(res, (size_t)needed + 1, "%.*g", DBL_DECIMAL_DIG, number);
+    if (written < 0 || written > needed)
+        return NULL;
 
     return res;
 }
@@ -74,8 +76,6 @@ string_chunks_t *split_str(arena_t *arena, const char *input, const char *delim)
     if (!chunks)
         return NULL;
 
-    arena_da_init(arena, chunks);
-
     const char *current_pos = input;
     const char *next_delim = NULL;
     size_t delim_len = strlen(delim);
@@ -84,6 +84,18 @@ string_chunks_t *split_str(arena_t *arena, const char *input, const char *delim)
         return chunks;
     }
 
+    usize cap = 0;
+
+    while ((next_delim = strstr(current_pos, delim)) != NULL) {
+        assert(next_delim >= current_pos);
+        cap += 1;
+        current_pos = next_delim + delim_len;
+    }
+
+    arena_da_init(arena, chunks, cap);
+
+    current_pos = input;
+    next_delim = NULL;
     while ((next_delim = strstr(current_pos, delim)) != NULL) {
         assert(next_delim >= current_pos);
 

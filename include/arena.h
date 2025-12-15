@@ -25,9 +25,9 @@ void arena_destroy(arena_t *arena);
 
 #define ARENA_DA_CAPACITY 256
 
-#define arena_da_init(a, da)                                                   \
+#define arena_da_init(a, da, cap)                                              \
     do {                                                                       \
-        (da)->capacity = ARENA_DA_CAPACITY;                                    \
+        (da)->capacity = cap;                                                  \
         (da)->size = 0;                                                        \
         (da)->items = arena_alloc((a), (da)->capacity * sizeof(*(da)->items)); \
         if (!(da)->items) {                                                    \
