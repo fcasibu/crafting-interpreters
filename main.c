@@ -66,16 +66,16 @@ typedef union {
         struct ast_node *body;
         struct environment *closure;
     } fun_def;
-} value_data_t;
+} value_as_t;
 
 typedef struct {
     value_type_t type;
-    value_data_t value;
+    value_as_t as;
 } value_t;
 
 typedef struct {
     eval_type_t type;
-    value_t data;
+    value_t value;
 } eval_result_t;
 
 typedef struct {
@@ -345,7 +345,7 @@ eval_result_t create_eval_error(void);
 eval_result_t create_eval_break(void);
 eval_result_t create_eval_return(void);
 eval_result_t create_eval_result(eval_type_t type, value_t value);
-value_t create_value(value_type_t type, value_data_t value);
+value_t create_value(value_type_t type, value_as_t as);
 value_t create_uninitialized_value(void);
 
 bool is_truthy(value_t value);
@@ -471,17 +471,17 @@ eval_result_t run_declarations(context_t *ctx, ast_nodes_t *declarations, enviro
             declarations->items[i]->type == NODE_ASSIGN || strcmp(ctx->cmd, "run") == 0)
             continue;
 
-        switch (result.data.type) {
+        switch (result.value.type) {
         case VALUE_NUMBER: {
-            printf("%g\n", result.data.value.number);
+            printf("%g\n", result.value.as.number);
 
         } break;
         case VALUE_BOOL: {
-            printf("%s\n", result.data.value.boolean ? "true" : "false");
+            printf("%s\n", result.value.as.boolean ? "true" : "false");
 
         } break;
         case VALUE_STRING: {
-            printf("%s\n", result.data.value.string);
+            printf("%s\n", result.value.as.string);
 
         } break;
         case VALUE_NIL: {
@@ -2098,13 +2098,13 @@ bool is_truthy(value_t value)
 {
     switch (value.type) {
     case VALUE_NUMBER:
-        return value.value.number != 0;
+        return value.as.number != 0;
 
     case VALUE_STRING:
-        return strcmp(value.value.string, "");
+        return strcmp(value.as.string, "");
 
     case VALUE_BOOL:
-        return value.value.boolean;
+        return value.as.boolean;
 
     default:
         return false;
@@ -2118,21 +2118,21 @@ bool is_equal(value_t a, value_t b)
         if (b.type != VALUE_NUMBER)
             return false;
 
-        return a.value.number == b.value.number;
+        return a.as.number == b.as.number;
     }
 
     case VALUE_STRING: {
         if (b.type != VALUE_STRING)
             return false;
 
-        return strcmp(a.value.string, b.value.string) == 0;
+        return strcmp(a.as.string, b.as.string) == 0;
     }
 
     case VALUE_BOOL:
         if (b.type != VALUE_BOOL)
             return false;
 
-        return a.value.boolean == b.value.boolean;
+        return a.as.boolean == b.as.boolean;
 
     default:
         return false;
@@ -2143,15 +2143,15 @@ const char *stringify_value(arena_t *arena, value_t data)
 {
     switch (data.type) {
     case VALUE_BOOL:
-        return data.value.boolean ? "true" : "false";
+        return data.as.boolean ? "true" : "false";
     case VALUE_NUMBER:
-        return number_to_string(arena, data.value.number);
+        return number_to_string(arena, data.as.number);
     case VALUE_NIL:
         return "nil";
     case VALUE_STRING:
-        return data.value.string;
+        return data.as.string;
     case VALUE_FUN: {
-        const char *name = data.value.fun_def.name;
+        const char *name = data.as.fun_def.name;
         if (!name)
             return "<fn (nil)>";
 
@@ -2171,8 +2171,8 @@ bool interpret_comparison(token_type_t op, value_t a, value_t b)
 
     switch (a.type) {
     case VALUE_NUMBER: {
-        double x = a.value.number;
-        double y = b.value.number;
+        double x = a.as.number;
+        double y = b.as.number;
 
         switch (op) {
         case LESS:
@@ -2189,7 +2189,7 @@ bool interpret_comparison(token_type_t op, value_t a, value_t b)
     }
 
     case VALUE_STRING: {
-        int cmp = strcmp(a.value.string, b.value.string);
+        int cmp = strcmp(a.as.string, b.as.string);
 
         switch (op) {
         case LESS:
@@ -2206,8 +2206,8 @@ bool interpret_comparison(token_type_t op, value_t a, value_t b)
     }
 
     case VALUE_BOOL: {
-        int x = a.value.boolean;
-        int y = b.value.boolean;
+        int x = a.as.boolean;
+        int y = b.as.boolean;
 
         switch (op) {
         case LESS:
@@ -2237,14 +2237,14 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
         eval_result_t left = interpret(ctx, node->value.binary.left, env);
         eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        return is_truthy(left.data) ? left : right;
+        return is_truthy(left.value) ? left : right;
     }
 
     case AND: {
         eval_result_t left = interpret(ctx, node->value.binary.left, env);
         eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        return is_truthy(left.data) ? right : left;
+        return is_truthy(left.value) ? right : left;
     }
 
     case EQUAL_EQUAL: {
@@ -2253,7 +2253,7 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
 
         return create_eval_result(
             EVAL_OK,
-            create_value(VALUE_BOOL, (value_data_t){ .boolean = is_equal(left.data, right.data) }));
+            create_value(VALUE_BOOL, (value_as_t){ .boolean = is_equal(left.value, right.value) }));
     }
 
     case BANG_EQUAL: {
@@ -2262,7 +2262,7 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
 
         return create_eval_result(
             EVAL_OK, create_value(VALUE_BOOL,
-                                  (value_data_t){ .boolean = !is_equal(left.data, right.data) }));
+                                  (value_as_t){ .boolean = !is_equal(left.value, right.value) }));
     }
 
     case LESS:
@@ -2272,73 +2272,70 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
         eval_result_t left = interpret(ctx, node->value.binary.left, env);
         eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        if (!check_number_operands(ctx, node->value.binary.op, left.data, right.data))
+        if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
             return create_eval_error();
 
         return create_eval_result(
             EVAL_OK,
             create_value(VALUE_BOOL,
-                         (value_data_t){ .boolean = interpret_comparison(node->value.binary.op.type,
-                                                                         left.data, right.data) }));
+                         (value_as_t){ .boolean = interpret_comparison(node->value.binary.op.type,
+                                                                       left.value, right.value) }));
     }
 
     case PLUS: {
         eval_result_t left = interpret(ctx, node->value.binary.left, env);
         eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        if (left.data.type == VALUE_STRING || right.data.type == VALUE_STRING) {
-            const char *left_str = stringify_value(ctx->arena, left.data);
-            const char *right_str = stringify_value(ctx->arena, right.data);
+        if (left.value.type == VALUE_STRING || right.value.type == VALUE_STRING) {
+            const char *left_str = stringify_value(ctx->arena, left.value);
+            const char *right_str = stringify_value(ctx->arena, right.value);
 
             return create_eval_result(
                 EVAL_OK, create_value(VALUE_STRING,
-                                      (value_data_t){
+                                      (value_as_t){
                                           .string = concat_str(ctx->arena, left_str, right_str),
                                       }));
         }
 
-        if (!check_number_operands(ctx, node->value.binary.op, left.data, right.data))
+        if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
             return create_eval_error();
 
         return create_eval_result(
-            EVAL_OK,
-            create_value(VALUE_NUMBER, (value_data_t){ .number = left.data.value.number +
-                                                                 right.data.value.number }));
+            EVAL_OK, create_value(VALUE_NUMBER, (value_as_t){ .number = left.value.as.number +
+                                                                        right.value.as.number }));
     }
     case MINUS: {
         eval_result_t left = interpret(ctx, node->value.binary.left, env);
         eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        if (!check_number_operands(ctx, node->value.binary.op, left.data, right.data))
+        if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
             return create_eval_error();
 
         return create_eval_result(
-            EVAL_OK,
-            create_value(VALUE_NUMBER, (value_data_t){ .number = left.data.value.number -
-                                                                 right.data.value.number }));
+            EVAL_OK, create_value(VALUE_NUMBER, (value_as_t){ .number = left.value.as.number -
+                                                                        right.value.as.number }));
     }
 
     case STAR: {
         eval_result_t left = interpret(ctx, node->value.binary.left, env);
         eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        if (!check_number_operands(ctx, node->value.binary.op, left.data, right.data))
+        if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
             return create_eval_error();
 
         return create_eval_result(
-            EVAL_OK,
-            create_value(VALUE_NUMBER, (value_data_t){ .number = left.data.value.number *
-                                                                 right.data.value.number }));
+            EVAL_OK, create_value(VALUE_NUMBER, (value_as_t){ .number = left.value.as.number *
+                                                                        right.value.as.number }));
     }
 
     case SLASH: {
         eval_result_t left = interpret(ctx, node->value.binary.left, env);
         eval_result_t right = interpret(ctx, node->value.binary.right, env);
 
-        if (!check_number_operands(ctx, node->value.binary.op, left.data, right.data))
+        if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
             return create_eval_error();
 
-        if (right.data.value.number == 0.0) {
+        if (right.value.as.number == 0.0) {
             token_t tok = node->value.binary.op;
             report_runtime(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source,
                            tok.line_start, "Division by zero.");
@@ -2346,9 +2343,8 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
         }
 
         return create_eval_result(
-            EVAL_OK,
-            create_value(VALUE_NUMBER, (value_data_t){ .number = left.data.value.number /
-                                                                 right.data.value.number }));
+            EVAL_OK, create_value(VALUE_NUMBER, (value_as_t){ .number = left.value.as.number /
+                                                                        right.value.as.number }));
     }
 
     case COMMA: {
@@ -2369,28 +2365,26 @@ eval_result_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *e
         return create_eval_result(
             EVAL_OK,
             create_value(VALUE_BOOL,
-                         (value_data_t){ .boolean = !is_truthy(
-                                             interpret(ctx, node->value.unary.child, env).data) }));
+                         (value_as_t){ .boolean = !is_truthy(
+                                           interpret(ctx, node->value.unary.child, env).value) }));
     }
 
     case MINUS: {
         eval_result_t child = interpret(ctx, node->value.unary.child, env);
-        if (!check_number_operand(ctx, node->value.unary.op, child.data))
+        if (!check_number_operand(ctx, node->value.unary.op, child.value))
             return create_eval_error();
 
         return create_eval_result(
-            EVAL_OK,
-            create_value(VALUE_NUMBER, (value_data_t){ .number = -child.data.value.number }));
+            EVAL_OK, create_value(VALUE_NUMBER, (value_as_t){ .number = -child.value.as.number }));
     }
 
     case PLUS: {
         eval_result_t child = interpret(ctx, node->value.unary.child, env);
-        if (!check_number_operand(ctx, node->value.unary.op, child.data))
+        if (!check_number_operand(ctx, node->value.unary.op, child.value))
             return create_eval_error();
 
         return create_eval_result(
-            EVAL_OK,
-            create_value(VALUE_NUMBER, (value_data_t){ .number = +child.data.value.number }));
+            EVAL_OK, create_value(VALUE_NUMBER, (value_as_t){ .number = +child.value.as.number }));
     }
 
     default: {
@@ -2401,7 +2395,7 @@ eval_result_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *e
 
 eval_result_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *env)
 {
-    bool condition = is_truthy(interpret(ctx, node->value.ternary.condition, env).data);
+    bool condition = is_truthy(interpret(ctx, node->value.ternary.condition, env).value);
     if (condition)
         return interpret(ctx, node->value.ternary.true_branch, env);
 
@@ -2416,34 +2410,34 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     case NODE_NUMBER:
         return create_eval_result(
             EVAL_OK,
-            create_value(VALUE_NUMBER, (value_data_t){ .number = node->value.literal.number }));
+            create_value(VALUE_NUMBER, (value_as_t){ .number = node->value.literal.number }));
 
     case NODE_STRING:
         return create_eval_result(
             EVAL_OK,
-            create_value(VALUE_STRING, (value_data_t){ .string = node->value.literal.string }));
+            create_value(VALUE_STRING, (value_as_t){ .string = node->value.literal.string }));
 
     case NODE_BOOL:
         return create_eval_result(
             EVAL_OK,
-            create_value(VALUE_BOOL, (value_data_t){ .boolean = node->value.literal.boolean }));
+            create_value(VALUE_BOOL, (value_as_t){ .boolean = node->value.literal.boolean }));
 
     case NODE_NIL:
-        return create_eval_result(EVAL_OK, create_value(VALUE_NIL, (value_data_t){}));
+        return create_eval_result(EVAL_OK, create_value(VALUE_NIL, (value_as_t){}));
 
     case NODE_FUN: {
         assert(node->value.fun_decl.body);
 
         value_t data =
-            create_value(VALUE_FUN, (value_data_t){ .fun_def = {
-                                                        .params = node->value.fun_decl.params,
-                                                        .body = node->value.fun_decl.body,
-                                                        .closure = env,
-                                                    } });
+            create_value(VALUE_FUN, (value_as_t){ .fun_def = {
+                                                      .params = node->value.fun_decl.params,
+                                                      .body = node->value.fun_decl.body,
+                                                      .closure = env,
+                                                  } });
 
         if (node->value.fun_decl.name) {
             const char *name = node->value.fun_decl.name->value.identifier.name;
-            data.value.fun_def.name = name;
+            data.as.fun_def.name = name;
 
             if (set_var_entry(ctx->arena, &env->pool, name, data) != 0)
                 return create_eval_error();
@@ -2485,7 +2479,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     case NODE_PRINT: {
         printf("%s\n",
                stringify_value(ctx->arena,
-                               interpret(ctx, node->value.print_stmt.expression, env).data));
+                               interpret(ctx, node->value.print_stmt.expression, env).value));
 
         return create_eval_ok();
     }
@@ -2502,7 +2496,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         }
 
         if (set_var_entry(ctx->arena, &env->pool, identifier,
-                          interpret(ctx, node->value.var_decl.expression, env).data) != 0)
+                          interpret(ctx, node->value.var_decl.expression, env).value) != 0)
             return create_eval_error();
 
         return create_eval_ok();
@@ -2519,7 +2513,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         }
 
         eval_result_t value = interpret(ctx, node->value.assign.expression, env);
-        if (set_var_in_scope(ctx->arena, env, var_name, value.data) != 0)
+        if (set_var_in_scope(ctx->arena, env, var_name, value.value) != 0)
             return create_eval_error();
 
         assert(value.type == EVAL_OK);
@@ -2538,7 +2532,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
         eval_result_t condition = interpret(ctx, node->value.if_stmt.condition, env);
 
-        if (is_truthy(condition.data)) {
+        if (is_truthy(condition.value)) {
             assert(node->value.if_stmt.then_branch);
 
             eval_result_t result = interpret(ctx, node->value.if_stmt.then_branch, env);
@@ -2557,7 +2551,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         assert(node->value.while_stmt.condition);
         assert(node->value.while_stmt.body);
 
-        while (is_truthy(interpret(ctx, node->value.while_stmt.condition, env).data)) {
+        while (is_truthy(interpret(ctx, node->value.while_stmt.condition, env).value)) {
             eval_result_t result = interpret(ctx, node->value.while_stmt.body, env);
 
             if (result.type == EVAL_BREAK)
@@ -2579,7 +2573,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         if (node->value.for_stmt.initializer)
             interpret(ctx, node->value.for_stmt.initializer, local_env);
 
-        while ((condition ? is_truthy(interpret(ctx, condition, local_env).data) : true)) {
+        while ((condition ? is_truthy(interpret(ctx, condition, local_env).value) : true)) {
             eval_result_t result = interpret(ctx, node->value.for_stmt.body, local_env);
 
             if (result.type == EVAL_BREAK)
@@ -2601,22 +2595,22 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
     case NODE_RETURN: {
         ast_node_t *value = node->value.return_stmt.value;
-        return create_eval_result(EVAL_RETURN, value ? interpret(ctx, value, env).data :
-                                                       create_value(VALUE_NIL, (value_data_t){}));
+        return create_eval_result(EVAL_RETURN, value ? interpret(ctx, value, env).value :
+                                                       create_value(VALUE_NIL, (value_as_t){}));
     }
 
     case NODE_CALL: {
         eval_result_t callee_result = interpret(ctx, node->value.call.callee, env);
         source_loc_t loc = node->value.call.loc;
 
-        if (callee_result.data.type != VALUE_FUN) {
+        if (callee_result.value.type != VALUE_FUN) {
             report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
                            loc.line_start, "Use of undeclared function");
 
             return create_eval_error();
         }
 
-        ast_nodes_t *params = callee_result.data.value.fun_def.params;
+        ast_nodes_t *params = callee_result.value.as.fun_def.params;
         ast_nodes_t *args = node->value.call.args;
         usize parameters_len = params ? params->size : 0;
         usize arguments_len = args ? args->size : 0;
@@ -2631,7 +2625,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
             return create_eval_error();
         }
 
-        environment_t *closure = callee_result.data.value.fun_def.closure;
+        environment_t *closure = callee_result.value.as.fun_def.closure;
         environment_t *local_env = create_env(ctx->arena, closure);
 
         if (args) {
@@ -2639,22 +2633,22 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
                 eval_result_t result = interpret(ctx, args->items[i], env);
 
                 if (set_var_entry(ctx->arena, &local_env->pool,
-                                  params->items[i]->value.identifier.name, result.data) != 0)
+                                  params->items[i]->value.identifier.name, result.value) != 0)
                     return create_eval_error();
             }
         }
 
-        ast_node_t *body = callee_result.data.value.fun_def.body;
+        ast_node_t *body = callee_result.value.as.fun_def.body;
         assert(body);
 
         eval_result_t result = run_declarations(ctx, body->value.block.declarations, local_env);
 
         if (result.type == EVAL_OK)
-            return create_eval_result(EVAL_OK, create_value(VALUE_NIL, (value_data_t){}));
+            return create_eval_result(EVAL_OK, create_value(VALUE_NIL, (value_as_t){}));
         if (result.type != EVAL_RETURN)
             return result;
 
-        return create_eval_result(EVAL_OK, result.data);
+        return create_eval_result(EVAL_OK, result.value);
     }
 
     default: {
@@ -2665,7 +2659,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
 eval_result_t create_eval_result(eval_type_t type, value_t value)
 {
-    return (eval_result_t){ .type = type, .data = value };
+    return (eval_result_t){ .type = type, .value = value };
 }
 
 eval_result_t create_eval_ok(void)
@@ -2683,9 +2677,9 @@ eval_result_t create_eval_break(void)
     return (eval_result_t){ .type = EVAL_BREAK };
 }
 
-value_t create_value(value_type_t type, value_data_t value)
+value_t create_value(value_type_t type, value_as_t as)
 {
-    return (value_t){ .type = type, .value = value };
+    return (value_t){ .type = type, .as = as };
 }
 
 value_t create_uninitialized_value(void)
