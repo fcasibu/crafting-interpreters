@@ -12,12 +12,14 @@ typedef struct arena {
 
 bool arena_create(arena_t *arena, usize capacity);
 void *arena_alloc(arena_t *arena, usize size);
+void *arena_alloc_aligned(arena_t *arena, usize size, usize alignment);
 void *arena_realloc(arena_t *arena, void *ptr, usize old_size, usize size);
 void arena_clean(arena_t *arena);
 void arena_destroy(arena_t *arena);
 
 #ifdef ARENA_IMPLEMENTATION
 
+#include <stddef.h>
 #include <assert.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -39,9 +41,10 @@ void arena_destroy(arena_t *arena);
 #define arena_da_append(a, da, item)                                                          \
     do {                                                                                      \
         if ((da)->size >= (da)->capacity) {                                                   \
-            (da)->capacity = (da)->capacity == 0 ? ARENA_DA_CAPACITY : (da)->capacity * 2;    \
+            usize old_cap = (da)->capacity;                                                   \
+            (da)->capacity = old_cap == 0 ? ARENA_DA_CAPACITY : old_cap * 2;                  \
             typeof(*(da)->items) *tmp = arena_realloc((a), (da)->items,                       \
-                                                      (da)->size * sizeof(*(da)->items),      \
+                                                      old_cap * sizeof(*(da)->items),         \
                                                       (da)->capacity * sizeof(*(da)->items)); \
             if (!tmp) {                                                                       \
                 fprintf(stderr, "Out of memory\n");                                           \
@@ -51,6 +54,16 @@ void arena_destroy(arena_t *arena);
         }                                                                                     \
         (da)->items[(da)->size++] = (item);                                                   \
     } while (0)
+
+static inline usize arena_align_up(usize n, usize a)
+{
+    return (n + (a - 1)) & ~(a - 1);
+}
+
+static inline bool arena_is_pow2(usize x)
+{
+    return x != 0 && (x & (x - 1)) == 0;
+}
 
 bool arena_create(arena_t *arena, usize capacity)
 {
@@ -69,19 +82,36 @@ bool arena_create(arena_t *arena, usize capacity)
 
 void *arena_alloc(arena_t *arena, usize size)
 {
+    return arena_alloc_aligned(arena, size, alignof(max_align_t));
+}
+
+void *arena_alloc_aligned(arena_t *arena, usize size, usize alignment)
+{
     if (!arena || !arena->base || size == 0)
         return NULL;
+    if (!arena_is_pow2(alignment))
+        return NULL;
+    if (alignment < alignof(max_align_t))
+        alignment = alignof(max_align_t);
 
     arena_t *end = arena;
     while (end->next)
         end = end->next;
 
-    if (end->offset + size > end->capacity) {
+    while (true) {
+        usize aligned_off = arena_align_up(end->offset, alignment);
+        if (aligned_off + size <= end->capacity) {
+            void *ptr = end->base + aligned_off;
+            end->offset = aligned_off + size;
+            return ptr;
+        }
+
         arena_t *next = malloc(sizeof(*next));
         if (!next)
             return NULL;
 
-        usize new_cap = size > end->capacity * 2 ? size : end->capacity * 2;
+        usize need = size + (alignment - 1);
+        usize new_cap = need > end->capacity * 2 ? need : end->capacity * 2;
         if (!arena_create(next, new_cap)) {
             free(next);
             return NULL;
@@ -90,11 +120,6 @@ void *arena_alloc(arena_t *arena, usize size)
         end->next = next;
         end = next;
     }
-
-    void *ptr = end->base + end->offset;
-    end->offset += size;
-
-    return ptr;
 }
 
 void *arena_realloc(arena_t *arena, void *oldptr, usize old_size, usize new_size)

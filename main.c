@@ -1,5 +1,3 @@
-#include <stdarg.h>
-
 #define ARENA_IMPLEMENTATION
 #include "arena.h"
 #define FILE_IMPLEMENTATION
@@ -331,8 +329,8 @@ token_t parser_peek(parser_t *parser);
 token_t parser_previous(parser_t *parser);
 token_t parser_advance(parser_t *parser);
 void parser_consume(context_t *ctx, parser_t *parser, token_type_t type, const char *message);
+bool parser_match_any(parser_t *parser, const token_type_t *types, usize count);
 bool parser_is_eof(parser_t *parser);
-bool parser_match(parser_t *parser, usize count, ...);
 void parser_synchronize(parser_t *parser);
 
 bool interpret_comparison(token_type_t op, value_t a, value_t b);
@@ -375,15 +373,20 @@ static bool had_runtime_error = false;
 
 string_pool_t string_pool = { 0 };
 
+#define parser_match(p, ...)                        \
+    parser_match_any(                               \
+        (p), (const token_type_t[]){ __VA_ARGS__ }, \
+        (usize)(sizeof((const token_type_t[]){ __VA_ARGS__ }) / sizeof(token_type_t)))
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
-        LOG(LOG_ERROR, "%s", "Usage: ./lox run file.lox");
+        LOG(LOG_ERROR, "Usage: ./lox run file.lox");
         return 1;
     }
 
     if (strcmp(argv[1], "run") != 0 && strcmp(argv[1], "test") != 0) {
-        LOG(LOG_ERROR, "%s", "Invalid command. Use `run` or `test`");
+        LOG(LOG_ERROR, "Invalid command. Use `run` or `test`");
         return 1;
     }
 
@@ -400,7 +403,7 @@ int main(int argc, char **argv)
 
     arena_t arena = { 0 };
     if (!arena_create(&arena, (usize)ARENA_SIZE)) {
-        LOG(LOG_ERROR, "%s", "Failed to create arena");
+        LOG(LOG_ERROR, "Failed to create arena");
         return 1;
     }
 
@@ -539,7 +542,7 @@ ast_node_t *parser_parse_declaration(context_t *ctx, parser_t *parser)
         if (!node)
             parser_synchronize(parser);
 
-        if (parser_match(parser, 1, SEMICOLON))
+        if (parser_match(parser, SEMICOLON))
             parser_advance(parser);
 
         return node;
@@ -562,7 +565,7 @@ ast_node_t *parser_parse_var_declaration(context_t *ctx, parser_t *parser)
     if (!identifier)
         return NULL;
 
-    if (parser_peek(parser).type == SEMICOLON)
+    if (parser_match(parser, SEMICOLON))
         return parser_create_node(
             ctx->arena, NODE_VAR,
             (node_value_t){ .var_decl.identifier = identifier,
@@ -607,7 +610,7 @@ ast_node_t *parser_parse_fun_declaration(context_t *ctx, parser_t *parser)
 
     ast_nodes_t *params = NULL;
 
-    if (parser_peek(parser).type != RIGHT_PAREN) {
+    if (!parser_match(parser, RIGHT_PAREN)) {
         params = parser_parse_params(ctx, parser);
     }
 
@@ -726,7 +729,7 @@ ast_node_t *parser_parse_block(context_t *ctx, parser_t *parser)
     ast_nodes_t *block_declarations = arena_alloc(ctx->arena, sizeof(*block_declarations));
     arena_da_init(ctx->arena, block_declarations, 256);
 
-    while (!parser_match(parser, 1, RIGHT_BRACE) && !parser_is_eof(parser)) {
+    while (!parser_match(parser, RIGHT_BRACE) && !parser_is_eof(parser)) {
         ast_node_t *node = parser_parse_declaration(ctx, parser);
 
         if (!node)
@@ -783,7 +786,7 @@ ast_node_t *parser_parse_if_stmt(context_t *ctx, parser_t *parser)
 
     ast_node_t *else_branch = NULL;
 
-    if (parser_peek(parser).type == ELSE) {
+    if (parser_match(parser, ELSE)) {
         token_t else_token = parser_advance(parser);
         else_branch = parser_parse_statement(ctx, parser);
 
@@ -866,13 +869,13 @@ ast_node_t *parser_parse_for_stmt(context_t *ctx, parser_t *parser)
 
     ast_node_t *initializer;
 
-    if (parser_peek(parser).type == VAR) {
+    if (parser_match(parser, VAR)) {
         initializer = parser_parse_var_declaration(ctx, parser);
     } else {
         initializer = parser_parse_expression(ctx, parser);
     }
 
-    if (!initializer && parser_peek(parser).type != SEMICOLON) {
+    if (!initializer && !parser_match(parser, SEMICOLON)) {
         parser_advance(parser);
         report_error_at_token(ctx, parser_previous(parser), "Expected for loop initializer or ';'");
         return NULL;
@@ -885,7 +888,7 @@ ast_node_t *parser_parse_for_stmt(context_t *ctx, parser_t *parser)
 
     ast_node_t *condition = parser_parse_expression(ctx, parser);
 
-    if (!condition && parser_peek(parser).type != SEMICOLON) {
+    if (!condition && !parser_match(parser, SEMICOLON)) {
         parser_advance(parser);
         report_error_at_token(ctx, parser_previous(parser), "Expected for loop condition or ';'");
         return NULL;
@@ -946,7 +949,7 @@ ast_node_t *parser_parse_expression(context_t *ctx, parser_t *parser)
     if (!left)
         return NULL;
 
-    while (!parser_is_eof(parser) && parser_match(parser, 1, COMMA)) {
+    while (!parser_is_eof(parser) && parser_match(parser, COMMA)) {
         token_t op = parser_advance(parser);
 
         ast_node_t *right = parser_parse_expression(ctx, parser);
@@ -965,21 +968,18 @@ ast_node_t *parser_parse_expression(context_t *ctx, parser_t *parser)
 
 ast_node_t *parser_parse_assignment(context_t *ctx, parser_t *parser)
 {
-    if (parser_peek(parser).type == END_OF_FILE)
-        return NULL;
-
     ast_node_t *left = parser_parse_ternary(ctx, parser);
 
     if (!left)
         return NULL;
 
-    if (parser_match(parser, 1, EQUAL)) {
+    if (parser_match(parser, EQUAL)) {
         if (left->type != NODE_IDENTIFIER) {
             report_error_at_token(ctx, parser_previous(parser), "Invalid assignment target.");
             return NULL;
         }
 
-        assert(parser_advance(parser).type == EQUAL);
+        parser_consume(ctx, parser, EQUAL, "Expected '='");
         ast_node_t *right = parser_parse_assignment(ctx, parser);
 
         if (!right) {
@@ -998,13 +998,9 @@ ast_node_t *parser_parse_assignment(context_t *ctx, parser_t *parser)
 
 ast_node_t *parser_parse_ternary(context_t *ctx, parser_t *parser)
 {
-    token_t tok = parser_peek(parser);
-    if (tok.type == END_OF_FILE)
-        return NULL;
-
     ast_node_t *condition = parser_parse_logical_or(ctx, parser);
 
-    if (!parser_match(parser, 1, QUESTION_MARK))
+    if (!parser_match(parser, QUESTION_MARK))
         return condition;
 
     parser_advance(parser);
@@ -1020,7 +1016,7 @@ ast_node_t *parser_parse_ternary(context_t *ctx, parser_t *parser)
         return NULL;
     }
 
-    if (!parser_match(parser, 1, COLON)) {
+    if (!parser_match(parser, COLON)) {
         report_error_at_token(ctx, parser_previous(parser),
                               "Expected false branch expression for ternary");
         return NULL;
@@ -1046,7 +1042,7 @@ ast_node_t *parser_parse_logical_or(context_t *ctx, parser_t *parser)
     token_t tok = parser_peek(parser);
     ast_node_t *left = parser_parse_logical_and(ctx, parser);
 
-    while (!parser_is_eof(parser) && parser_match(parser, 1, OR)) {
+    while (!parser_is_eof(parser) && parser_match(parser, OR)) {
         if (!left) {
             report_error_at_token(ctx, tok, "Missing left-hand expression");
 
@@ -1075,7 +1071,7 @@ ast_node_t *parser_parse_logical_and(context_t *ctx, parser_t *parser)
     token_t tok = parser_peek(parser);
     ast_node_t *left = parser_parse_equality(ctx, parser);
 
-    while (!parser_is_eof(parser) && parser_match(parser, 1, AND)) {
+    while (!parser_is_eof(parser) && parser_match(parser, AND)) {
         if (!left) {
             report_error_at_token(ctx, tok, "Missing left-hand expression");
 
@@ -1104,7 +1100,7 @@ ast_node_t *parser_parse_equality(context_t *ctx, parser_t *parser)
     token_t tok = parser_peek(parser);
     ast_node_t *left = parser_parse_comparison(ctx, parser);
 
-    while (!parser_is_eof(parser) && parser_match(parser, 2, EQUAL_EQUAL, BANG_EQUAL)) {
+    while (!parser_is_eof(parser) && parser_match(parser, EQUAL_EQUAL, BANG_EQUAL)) {
         if (!left) {
             report_error_at_token(ctx, tok, "Equality operators must have a left-hand operand");
 
@@ -1135,7 +1131,7 @@ ast_node_t *parser_parse_comparison(context_t *ctx, parser_t *parser)
     ast_node_t *left = parser_parse_term(ctx, parser);
 
     while (!parser_is_eof(parser) &&
-           parser_match(parser, 4, LESS, LESS_EQUAL, GREATER, GREATER_EQUAL)) {
+           parser_match(parser, LESS, LESS_EQUAL, GREATER, GREATER_EQUAL)) {
         if (!left) {
             report_error_at_token(ctx, tok, "Comparison operators must have a left-hand operand");
 
@@ -1164,7 +1160,7 @@ ast_node_t *parser_parse_term(context_t *ctx, parser_t *parser)
     token_t tok = parser_peek(parser);
     ast_node_t *left = parser_parse_factor(ctx, parser);
 
-    while (!parser_is_eof(parser) && parser_match(parser, 2, PLUS, MINUS)) {
+    while (!parser_is_eof(parser) && parser_match(parser, PLUS, MINUS)) {
         if (!left) {
             report_error_at_token(ctx, tok,
                                   "Addition/subtraction operators must have a left-hand operand");
@@ -1193,7 +1189,7 @@ ast_node_t *parser_parse_factor(context_t *ctx, parser_t *parser)
     token_t tok = parser_peek(parser);
     ast_node_t *left = parser_parse_unary(ctx, parser);
 
-    while (!parser_is_eof(parser) && parser_match(parser, 2, STAR, SLASH)) {
+    while (!parser_is_eof(parser) && parser_match(parser, STAR, SLASH)) {
         if (!left) {
             report_error_at_token(
                 ctx, tok, "Multiplication/division operators must have a left-hand operand");
@@ -1240,7 +1236,7 @@ ast_node_t *parser_parse_unary(context_t *ctx, parser_t *parser)
     case BANG: {
         parser_advance(parser);
 
-        bool is_bang = parser_peek(parser).type == BANG;
+        bool is_bang = parser_match(parser, BANG);
         ast_node_t *node = is_bang ? parser_parse_unary(ctx, parser) :
                                      parser_parse_call(ctx, parser);
 
@@ -1265,7 +1261,7 @@ ast_node_t *parser_parse_call(context_t *ctx, parser_t *parser)
     token_t callee_tok = parser_peek(parser);
     ast_node_t *left = parser_parse_primary(ctx, parser);
 
-    while (parser_match(parser, 1, LEFT_PAREN)) {
+    while (parser_match(parser, LEFT_PAREN)) {
         parser_advance(parser);
 
         ast_nodes_t *args = parser_parse_args(ctx, parser);
@@ -1298,19 +1294,19 @@ ast_node_t *parser_parse_call(context_t *ctx, parser_t *parser)
 
 ast_node_t *parser_parse_primary(context_t *ctx, parser_t *parser)
 {
-    if (parser_match(parser, 2, TRUE, FALSE))
+    if (parser_match(parser, TRUE, FALSE))
         return parser_parse_boolean(ctx, parser);
 
-    if (parser_match(parser, 1, NIL)) {
+    if (parser_match(parser, NIL)) {
         parser_advance(parser);
 
         return parser_create_node(ctx->arena, NODE_NIL, (node_value_t){}, 0, 0);
     }
 
-    if (parser_match(parser, 1, IDENTIFIER))
+    if (parser_match(parser, IDENTIFIER))
         return parser_parse_identifier(ctx, parser);
 
-    if (parser_match(parser, 1, LEFT_PAREN)) {
+    if (parser_match(parser, LEFT_PAREN)) {
         parser_advance(parser);
         ast_node_t *node = parser_parse_expression(ctx, parser);
 
@@ -1330,19 +1326,19 @@ ast_node_t *parser_parse_primary(context_t *ctx, parser_t *parser)
         return node;
     }
 
-    if (parser_match(parser, 1, STRING))
+    if (parser_match(parser, STRING))
         return parser_parse_string(ctx, parser);
 
-    if (parser_match(parser, 1, DOT)) {
+    if (parser_match(parser, DOT)) {
         report_unexpected_token(ctx, parser_peek(parser), "number");
 
         return NULL;
     }
 
-    if (parser_match(parser, 1, NUMBER))
+    if (parser_match(parser, NUMBER))
         return parser_parse_number(ctx, parser);
 
-    if (parser_match(parser, 1, FUN)) {
+    if (parser_match(parser, FUN)) {
         parser->function_depth += 1;
         ast_node_t *node = parser_parse_fun_expr(ctx, parser);
         parser->function_depth -= 1;
@@ -1363,7 +1359,7 @@ ast_nodes_t *parser_parse_args(context_t *ctx, parser_t *parser)
     arena_da_init(ctx->arena, args, 256);
     arena_da_append(ctx->arena, args, node);
 
-    while (!parser_is_eof(parser) && parser_match(parser, 1, COMMA)) {
+    while (!parser_is_eof(parser) && parser_match(parser, COMMA)) {
         parser_advance(parser);
 
         ast_node_t *arg = parser_parse_assignment(ctx, parser);
@@ -1386,7 +1382,7 @@ ast_nodes_t *parser_parse_params(context_t *ctx, parser_t *parser)
     arena_da_init(ctx->arena, params, 256);
     arena_da_append(ctx->arena, params, node);
 
-    while (!parser_is_eof(parser) && parser_match(parser, 1, COMMA)) {
+    while (!parser_is_eof(parser) && parser_match(parser, COMMA)) {
         parser_advance(parser);
 
         // TODO(fcasibu): not really stated in the chapter
@@ -1416,7 +1412,7 @@ ast_node_t *parser_parse_fun_expr(context_t *ctx, parser_t *parser)
 
     ast_nodes_t *params = NULL;
 
-    if (parser_peek(parser).type != RIGHT_PAREN) {
+    if (!parser_match(parser, RIGHT_PAREN)) {
         params = parser_parse_params(ctx, parser);
     }
 
@@ -1472,10 +1468,10 @@ ast_node_t *parser_parse_string(context_t *ctx, parser_t *parser)
         return NULL;
     }
 
-    char tmp[tok.lexeme_len - 2];
+    char tmp[tok.lexeme_len - 1];
     // remove quotes
-    memcpy(tmp, tok.lexeme + 1, tok.lexeme_len - 1);
-    tmp[tok.lexeme_len - 1] = '\0';
+    memcpy(tmp, tok.lexeme + 1, tok.lexeme_len - 2);
+    tmp[tok.lexeme_len - 2] = '\0';
 
     const char *value = intern(ctx->arena, tmp);
     if (!value)
@@ -1668,8 +1664,6 @@ void lexer_string(context_t *ctx, lexer_t *lexer)
     while (!lexer_is_at_end(ctx, lexer) && lexer_peek(ctx, lexer) != '"')
         lexer_advance(ctx, lexer);
 
-    usize string_len = lexer->cursor - start;
-
     if (lexer_is_at_end(ctx, lexer)) {
         report(start_line_idx, start_col_idx, ctx->source_filename, ctx->source, line_start,
                "Unterminated string.");
@@ -1678,6 +1672,8 @@ void lexer_string(context_t *ctx, lexer_t *lexer)
 
     assert(lexer_peek(ctx, lexer) == '"');
     lexer_advance(ctx, lexer);
+
+    usize string_len = lexer->cursor - start;
 
     lexer_append_token(ctx, lexer, STRING, ctx->source + start, string_len, start_line_idx,
                        start_col_idx, start, line_start);
@@ -1938,6 +1934,18 @@ token_t parser_advance(parser_t *parser)
     return parser->tokens[parser->current_index++];
 }
 
+bool parser_match_any(parser_t *parser, const token_type_t *types, usize count)
+{
+    token_t tok = parser_peek(parser);
+
+    for (usize i = 0; i < count; ++i) {
+        if (tok.type == types[i])
+            return true;
+    }
+
+    return false;
+}
+
 void parser_consume(context_t *ctx, parser_t *parser, token_type_t type, const char *message)
 {
     token_t tok = parser_peek(parser);
@@ -1947,23 +1955,6 @@ void parser_consume(context_t *ctx, parser_t *parser, token_type_t type, const c
     }
 
     report_error_at_token(ctx, tok, message);
-}
-
-bool parser_match(parser_t *parser, usize count, ...)
-{
-    va_list args;
-    va_start(args, count);
-
-    token_t tok = parser_peek(parser);
-    for (usize i = 0; i < count; ++i) {
-        if (tok.type == va_arg(args, token_type_t)) {
-            va_end(args);
-            return true;
-        }
-    }
-
-    va_end(args);
-    return false;
 }
 
 void parser_synchronize(parser_t *parser)
@@ -2091,7 +2082,7 @@ err set_var_in_scope(arena_t *arena, environment_t *env, const char *s, value_t 
 
 bool parser_is_eof(parser_t *parser)
 {
-    return parser_peek(parser).type == END_OF_FILE;
+    return parser_match(parser, END_OF_FILE);
 }
 
 bool is_truthy(value_t value)
@@ -2664,17 +2655,17 @@ eval_result_t create_eval_result(eval_type_t type, value_t value)
 
 eval_result_t create_eval_ok(void)
 {
-    return (eval_result_t){ .type = EVAL_OK };
+    return (eval_result_t){ .type = EVAL_OK, .value = { 0 } };
 }
 
 eval_result_t create_eval_error(void)
 {
-    return (eval_result_t){ .type = EVAL_ERROR };
+    return (eval_result_t){ .type = EVAL_ERROR, .value = { 0 } };
 }
 
 eval_result_t create_eval_break(void)
 {
-    return (eval_result_t){ .type = EVAL_BREAK };
+    return (eval_result_t){ .type = EVAL_BREAK, .value = { 0 } };
 }
 
 value_t create_value(value_type_t type, value_as_t as)
@@ -2684,7 +2675,7 @@ value_t create_value(value_type_t type, value_as_t as)
 
 value_t create_uninitialized_value(void)
 {
-    return (value_t){ .type = VALUE_UNINITIALIZED };
+    return (value_t){ .type = VALUE_UNINITIALIZED, .as = { 0 } };
 }
 
 bool check_number_operand(context_t *ctx, token_t tok, value_t child)
@@ -2724,11 +2715,12 @@ environment_t *create_env(arena_t *arena, environment_t *parent)
 {
     environment_t *env = arena_alloc(arena, sizeof(*env));
     if (!env) {
-        fprintf(stderr, "Out of memory\n");
+        LOG(LOG_ERROR, "Out of memory");
         abort();
     }
 
     env->parent_env = parent;
+    env->pool.head = NULL;
 
     return env;
 }

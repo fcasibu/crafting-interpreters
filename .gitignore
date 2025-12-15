@@ -1,4 +1,5 @@
 lox
 compile_commands.json
 build/
+build_debug/
 .cache/

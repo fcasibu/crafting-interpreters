@@ -12,8 +12,21 @@ add_executable(${TARGET}
     main.c
 )
 
-target_compile_options(${TARGET} PRIVATE -Wall -Wextra -Wpedantic)
 target_include_directories(${TARGET} PRIVATE "${CMAKE_SOURCE_DIR}/include")
+
+target_compile_options(${TARGET} PRIVATE
+  -Wall
+  -Wextra
+  -Wpedantic
+  -Wno-gnu-zero-variadic-macro-arguments
+
+  $<$<CONFIG:Debug>:-O0;-g3;-fsanitize=address,undefined;-fno-omit-frame-pointer>
+  $<$<CONFIG:Release>:-O2;-DNDEBUG>
+)
+
+target_link_options(${TARGET} PRIVATE
+  $<$<CONFIG:Debug>:-fsanitize=address,undefined>
+)
 
 include(CTest)
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "type_defs.h"
+#define ARENA_IMPLEMENTATION
 #include "arena.h"
 
 typedef struct {
@@ -16,21 +17,29 @@ char *concat_str(arena_t *arena, const char *a, const char *b);
 
 #ifdef UTILS_IMPLEMENTATION
 
+#include <assert.h>
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
 #include <stddef.h>
 #include <float.h>
-
-#define ARENA_IMPLEMENTATION
-#include "arena.h"
+#include <stdio.h>
 
 #define STRING_CHUNKS_CAPACITY 256
+#define ENUM(type, name) \
+    type name;           \
+    enum
 
 #define TODO(X)                                                        \
     do {                                                               \
         fprintf(stderr, "%s:%d: TODO: %s\n", __FILE__, __LINE__, (X)); \
         abort();                                                       \
+    } while (0)
+
+#define UNREACHABLE(X)                                                        \
+    do {                                                                      \
+        fprintf(stderr, "%s:%d: UNREACHABLE: %s\n", __FILE__, __LINE__, (X)); \
+        __builtin_unreachable();                                              \
     } while (0)
 
 char *number_to_string(arena_t *arena, double number)
