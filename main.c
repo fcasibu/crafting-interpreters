@@ -271,7 +271,6 @@ typedef struct environment {
 
 typedef struct {
     arena_t *arena;
-    string_pool_t string_pool;
     const char *source;
     const char *source_filename;
     usize source_len;
@@ -2022,10 +2021,7 @@ err set_var_entry(arena_t *arena, var_pool_t *pool, const char *s, value_t value
     if (!entry)
         return 1;
 
-    entry->str = intern(arena, s);
-    if (!entry->str)
-        return 1;
-
+    entry->str = s;
     entry->value = value;
     entry->next = pool->head;
     pool->head = entry;
@@ -2038,7 +2034,8 @@ var_pool_entry_t *get_var_entry(var_pool_t *pool, const char *s)
     var_pool_entry_t *current = pool->head;
 
     while (current) {
-        if (strcmp(current->str, s) == 0)
+        // already interned, can check reference
+        if (current->str == s)
             return current;
         current = current->next;
     }
