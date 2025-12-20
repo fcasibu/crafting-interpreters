@@ -108,11 +108,9 @@ typedef struct {
 } source_loc_t;
 
 typedef union {
-    struct {
-        const char *string;
-        double number;
-        bool boolean;
-    } literal;
+    const char *string_literal;
+    double number_literal;
+    bool boolean_literal;
 
     struct {
         const char *name;
@@ -137,9 +135,7 @@ typedef union {
         struct ast_node *false_branch;
     } ternary;
 
-    struct {
-        struct ast_node *expression;
-    } print_stmt;
+    struct ast_node *print_stmt;
 
     struct {
         struct ast_node *condition;
@@ -159,9 +155,7 @@ typedef union {
         struct ast_node *body;
     } for_stmt;
 
-    struct {
-        struct ast_node *value;
-    } return_stmt;
+    struct ast_node *return_value;
 
     struct {
         struct ast_node *identifier;
@@ -179,9 +173,7 @@ typedef union {
         struct ast_node *expression;
     } assign;
 
-    struct {
-        struct ast_nodes *declarations;
-    } block;
+    struct ast_nodes *block_declarations;
 
     struct {
         struct ast_nodes *args;
@@ -190,9 +182,7 @@ typedef union {
         source_loc_t loc;
     } call;
 
-    struct {
-        struct ast_nodes *declarations;
-    } program;
+    struct ast_nodes *prog_declarations;
 } node_value_t;
 
 typedef struct ast_node {
@@ -263,6 +253,11 @@ typedef struct var_pool_entry {
 typedef struct {
     var_pool_entry_t *head;
 } var_pool_t;
+
+typedef struct scope {
+    struct scope *enclosing;
+    var_pool_t pool;
+} scope_t;
 
 typedef struct environment {
     struct environment *parent_env;
@@ -451,7 +446,7 @@ void run(context_t *ctx)
         return;
 
     environment_t *global_env = create_env(ctx->arena, NULL);
-    run_declarations(ctx, parser.root->value.program.declarations, global_env);
+    run_declarations(ctx, parser.root->value.prog_declarations, global_env);
 
     // print_ast(parser.root, 0);
 }
@@ -513,7 +508,7 @@ void parser_parse(context_t *ctx, parser_t *parser)
     }
 
     parser->root = parser_create_node(
-        ctx->arena, NODE_PROGRAM, (node_value_t){ .program.declarations = prog_declarations }, 0,
+        ctx->arena, NODE_PROGRAM, (node_value_t){ .prog_declarations = prog_declarations }, 0,
         prog_declarations->size > 0 ? prog_declarations->items[prog_declarations->size - 1]->end :
                                       0);
 }
@@ -646,9 +641,8 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
         if (!node || node->type != NODE_FUN)
             parser_consume(ctx, parser, SEMICOLON, "Expected ';' after return");
 
-        return parser_create_node(ctx->arena, NODE_RETURN,
-                                  (node_value_t){ .return_stmt.value = node }, tok.cursor,
-                                  node ? node->end : tok.cursor + tok.lexeme_len - 1);
+        return parser_create_node(ctx->arena, NODE_RETURN, (node_value_t){ .return_value = node },
+                                  tok.cursor, node ? node->end : tok.cursor + tok.lexeme_len - 1);
     }
 
     case BREAK: {
@@ -745,7 +739,7 @@ ast_node_t *parser_parse_block(context_t *ctx, parser_t *parser)
     }
 
     return parser_create_node(ctx->arena, NODE_BLOCK,
-                              (node_value_t){ .block.declarations = block_declarations },
+                              (node_value_t){ .block_declarations = block_declarations },
                               tok.cursor, end_tok.cursor);
 }
 
@@ -936,9 +930,8 @@ ast_node_t *parser_parse_print_stmt(context_t *ctx, parser_t *parser)
         return NULL;
     }
 
-    return parser_create_node(ctx->arena, NODE_PRINT,
-                              ((node_value_t){ .print_stmt.expression = expression }), tok.cursor,
-                              expression->end);
+    return parser_create_node(ctx->arena, NODE_PRINT, ((node_value_t){ .print_stmt = expression }),
+                              tok.cursor, expression->end);
 }
 
 ast_node_t *parser_parse_expression(context_t *ctx, parser_t *parser)
@@ -1454,7 +1447,7 @@ ast_node_t *parser_parse_number(context_t *ctx, parser_t *parser)
         return NULL;
     }
 
-    node_value_t node_value = { .literal = { .number = value } };
+    node_value_t node_value = { .number_literal = value };
     return parser_create_node(ctx->arena, NODE_NUMBER, node_value, tok.cursor,
                               tok.cursor + tok.lexeme_len);
 }
@@ -1476,7 +1469,7 @@ ast_node_t *parser_parse_string(context_t *ctx, parser_t *parser)
     if (!value)
         return NULL;
 
-    node_value_t node_value = { .literal = { .string = value } };
+    node_value_t node_value = { .string_literal = value };
     return parser_create_node(ctx->arena, NODE_STRING, node_value, tok.cursor, tok.lexeme_len);
 }
 
@@ -1492,7 +1485,7 @@ ast_node_t *parser_parse_boolean(context_t *ctx, parser_t *parser)
     memcpy(tmp, tok.lexeme, tok.lexeme_len);
     tmp[tok.lexeme_len] = '\0';
 
-    node_value_t node_value = { .literal = { .boolean = strcmp(tmp, "true") == 0 } };
+    node_value_t node_value = { .boolean_literal = strcmp(tmp, "true") == 0 };
     return parser_create_node(ctx->arena, NODE_BOOL, node_value, tok.cursor, tok.lexeme_len);
 }
 ast_node_t *parser_parse_identifier(context_t *ctx, parser_t *parser)
@@ -2398,17 +2391,17 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     case NODE_NUMBER:
         return create_eval_result(
             EVAL_OK,
-            create_value(VALUE_NUMBER, (value_as_t){ .number = node->value.literal.number }));
+            create_value(VALUE_NUMBER, (value_as_t){ .number = node->value.number_literal }));
 
     case NODE_STRING:
         return create_eval_result(
             EVAL_OK,
-            create_value(VALUE_STRING, (value_as_t){ .string = node->value.literal.string }));
+            create_value(VALUE_STRING, (value_as_t){ .string = node->value.string_literal }));
 
     case NODE_BOOL:
         return create_eval_result(
             EVAL_OK,
-            create_value(VALUE_BOOL, (value_as_t){ .boolean = node->value.literal.boolean }));
+            create_value(VALUE_BOOL, (value_as_t){ .boolean = node->value.boolean_literal }));
 
     case NODE_NIL:
         return create_eval_result(EVAL_OK, create_value(VALUE_NIL, (value_as_t){}));
@@ -2466,8 +2459,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
     case NODE_PRINT: {
         printf("%s\n",
-               stringify_value(ctx->arena,
-                               interpret(ctx, node->value.print_stmt.expression, env).value));
+               stringify_value(ctx->arena, interpret(ctx, node->value.print_stmt, env).value));
 
         return create_eval_ok();
     }
@@ -2512,7 +2504,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     case NODE_BLOCK: {
         environment_t *local_env = create_env(ctx->arena, env);
 
-        return run_declarations(ctx, node->value.block.declarations, local_env);
+        return run_declarations(ctx, node->value.block_declarations, local_env);
     };
 
     case NODE_IF: {
@@ -2582,7 +2574,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     }
 
     case NODE_RETURN: {
-        ast_node_t *value = node->value.return_stmt.value;
+        ast_node_t *value = node->value.return_value;
         return create_eval_result(EVAL_RETURN, value ? interpret(ctx, value, env).value :
                                                        create_value(VALUE_NIL, (value_as_t){}));
     }
@@ -2629,7 +2621,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         ast_node_t *body = callee_result.value.as.fun_def.body;
         assert(body);
 
-        eval_result_t result = run_declarations(ctx, body->value.block.declarations, local_env);
+        eval_result_t result = run_declarations(ctx, body->value.block_declarations, local_env);
 
         if (result.type == EVAL_OK)
             return create_eval_result(EVAL_OK, create_value(VALUE_NIL, (value_as_t){}));
