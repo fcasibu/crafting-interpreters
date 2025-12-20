@@ -114,6 +114,7 @@ typedef union {
 
     struct {
         const char *name;
+        int depth;
         // TODO(fcasibu): maybe source loc should be on the node..
         source_loc_t loc;
     } identifier;
@@ -254,10 +255,11 @@ typedef struct {
     var_pool_entry_t *head;
 } var_pool_t;
 
-typedef struct scope {
-    struct scope *enclosing;
-    var_pool_t pool;
-} scope_t;
+typedef struct {
+    var_pool_t *items;
+    usize size;
+    usize capacity;
+} scopes_t;
 
 typedef struct environment {
     struct environment *parent_env;
@@ -327,11 +329,18 @@ bool parser_match_any(parser_t *parser, const token_type_t *types, usize count);
 bool parser_is_eof(parser_t *parser);
 void parser_synchronize(parser_t *parser);
 
+void resolve_variable(context_t *ctx, scopes_t *scopes, ast_node_t *node);
+void resolve_variables(context_t *ctx, scopes_t *scopes, ast_nodes_t *declarations);
+
 bool interpret_comparison(token_type_t op, value_t a, value_t b);
-eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *env);
-eval_result_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *env);
-eval_result_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *env);
-eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env);
+eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *global_env,
+                               environment_t *env);
+eval_result_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *global_env,
+                              environment_t *env);
+eval_result_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *global_env,
+                                environment_t *env);
+eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *global_env,
+                        environment_t *env);
 eval_result_t create_eval_ok(void);
 eval_result_t create_eval_error(void);
 eval_result_t create_eval_break(void);
@@ -353,13 +362,17 @@ void report_runtime(usize line_idx, usize col_idx, const char *source_filename, 
 void report_unexpected_token(context_t *ctx, token_t tok, const char *expected);
 void report_error_at_token(context_t *ctx, token_t tok, const char *error_msg);
 void run(context_t *ctx);
-eval_result_t run_declarations(context_t *ctx, ast_nodes_t *declarations, environment_t *env);
+eval_result_t run_declarations(context_t *ctx, ast_nodes_t *declarations, environment_t *global_env,
+                               environment_t *env);
 const char *intern(arena_t *arena, const char *s);
 err set_var_entry(arena_t *arena, var_pool_t *pool, const char *s, value_t value);
 var_pool_entry_t *get_var_entry(var_pool_t *pool, const char *s);
-var_pool_entry_t *get_var_in_scope(environment_t *env, const char *s);
-err set_var_in_scope(arena_t *arena, environment_t *env, const char *s, value_t value);
+var_pool_entry_t *get_var_in_scope(environment_t *global_env, environment_t *env, int depth,
+                                   const char *s);
+err set_var_in_scope(arena_t *arena, environment_t *global_env, environment_t *env, int depth,
+                     const char *s, value_t value);
 environment_t *create_env(arena_t *arena, environment_t *parent);
+environment_t *ancestor(environment_t *global_env, environment_t *env, int depth);
 const char *stringify_value(arena_t *arena, value_t data);
 
 static bool had_error = false;
@@ -445,16 +458,22 @@ void run(context_t *ctx)
     if (had_error)
         return;
 
+    scopes_t scopes = { 0 };
+    arena_da_init(ctx->arena, &scopes, 16);
+
+    resolve_variables(ctx, &scopes, parser.root->value.prog_declarations);
+
     environment_t *global_env = create_env(ctx->arena, NULL);
-    run_declarations(ctx, parser.root->value.prog_declarations, global_env);
+    run_declarations(ctx, parser.root->value.prog_declarations, global_env, global_env);
 
     // print_ast(parser.root, 0);
 }
 
-eval_result_t run_declarations(context_t *ctx, ast_nodes_t *declarations, environment_t *env)
+eval_result_t run_declarations(context_t *ctx, ast_nodes_t *declarations, environment_t *global_env,
+                               environment_t *env)
 {
     for (usize i = 0; i < declarations->size; ++i) {
-        eval_result_t result = interpret(ctx, declarations->items[i], env);
+        eval_result_t result = interpret(ctx, declarations->items[i], global_env, env);
 
         if (result.type == EVAL_RETURN || result.type == EVAL_BREAK)
             return result;
@@ -1976,6 +1995,150 @@ void parser_synchronize(parser_t *parser)
     }
 }
 
+void resolve_variable(context_t *ctx, scopes_t *scopes, ast_node_t *node)
+{
+    if (!node)
+        return;
+
+    switch (node->type) {
+    case NODE_VAR: {
+        assert(node->value.var_decl.identifier);
+        const char *name = node->value.var_decl.identifier->value.identifier.name;
+        set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], name, (value_t){});
+        resolve_variable(ctx, scopes, node->value.var_decl.identifier);
+    } break;
+
+    case NODE_FUN: {
+        if (node->value.fun_decl.name) {
+            const char *name = node->value.fun_decl.name->value.identifier.name;
+            set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], name, (value_t){});
+            resolve_variable(ctx, scopes, node->value.fun_decl.name);
+        }
+
+        arena_da_append(ctx->arena, scopes, (var_pool_t){ .head = NULL });
+        ast_nodes_t *params = node->value.fun_decl.params;
+        if (params && params->size) {
+            for (usize i = 0; i < params->size; ++i) {
+                const char *param = params->items[i]->value.identifier.name;
+                assert(param);
+                set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], param, (value_t){});
+                resolve_variable(ctx, scopes, params->items[i]);
+            }
+        }
+
+        assert(node->value.fun_decl.body);
+        ast_nodes_t *declarations = node->value.fun_decl.body->value.block_declarations;
+        for (usize i = 0; i < declarations->size; ++i) {
+            resolve_variable(ctx, scopes, declarations->items[i]);
+        }
+        scopes->size -= 1;
+    } break;
+
+    case NODE_PRINT: {
+        resolve_variable(ctx, scopes, node->value.print_stmt);
+    } break;
+
+    case NODE_BINARY: {
+        resolve_variable(ctx, scopes, node->value.binary.left);
+        resolve_variable(ctx, scopes, node->value.binary.right);
+    } break;
+
+    case NODE_UNARY: {
+        resolve_variable(ctx, scopes, node->value.unary.child);
+    } break;
+
+    case NODE_IF: {
+        resolve_variable(ctx, scopes, node->value.if_stmt.condition);
+        resolve_variable(ctx, scopes, node->value.if_stmt.then_branch);
+        resolve_variable(ctx, scopes, node->value.if_stmt.else_branch);
+    } break;
+
+    case NODE_TERNARY: {
+        resolve_variable(ctx, scopes, node->value.ternary.condition);
+        resolve_variable(ctx, scopes, node->value.ternary.true_branch);
+        resolve_variable(ctx, scopes, node->value.ternary.false_branch);
+    } break;
+
+    case NODE_ASSIGN: {
+        resolve_variable(ctx, scopes, node->value.assign.identifier);
+        resolve_variable(ctx, scopes, node->value.assign.expression);
+    } break;
+
+    case NODE_WHILE: {
+        resolve_variable(ctx, scopes, node->value.while_stmt.condition);
+        resolve_variable(ctx, scopes, node->value.while_stmt.body);
+    } break;
+
+    case NODE_FOR: {
+        arena_da_append(ctx->arena, scopes, (var_pool_t){ .head = NULL });
+        resolve_variable(ctx, scopes, node->value.for_stmt.initializer);
+        resolve_variable(ctx, scopes, node->value.for_stmt.condition);
+        resolve_variable(ctx, scopes, node->value.for_stmt.increment);
+        resolve_variable(ctx, scopes, node->value.for_stmt.body);
+        scopes->size -= 1;
+    } break;
+
+    case NODE_BLOCK: {
+        ast_nodes_t *declarations = node->value.block_declarations;
+        resolve_variables(ctx, scopes, declarations);
+    } break;
+
+    case NODE_RETURN: {
+        resolve_variable(ctx, scopes, node->value.return_value);
+    } break;
+
+    case NODE_IDENTIFIER: {
+        const char *name = node->value.identifier.name;
+        bool found = false;
+
+        for (int i = (int)scopes->size - 1; i >= 0; --i) {
+            var_pool_entry_t *current = scopes->items[i].head;
+
+            while (current) {
+                if (current->str == name) {
+                    int depth = i == 0 ? -1 : (int)(scopes->size - 1) - i;
+
+                    node->value.identifier.depth = depth;
+                    found = true;
+                    break;
+                }
+                current = current->next;
+            }
+
+            if (found)
+                break;
+        }
+    } break;
+
+    case NODE_CALL: {
+        assert(node->value.call.callee);
+        resolve_variable(ctx, scopes, node->value.call.callee);
+
+        ast_nodes_t *args = node->value.call.args;
+
+        if (args && args->size) {
+            for (usize i = 0; i < args->size; ++i) {
+                resolve_variable(ctx, scopes, args->items[i]);
+            }
+        }
+    } break;
+
+    default:
+        break;
+    }
+}
+
+void resolve_variables(context_t *ctx, scopes_t *scopes, ast_nodes_t *declarations)
+{
+    arena_da_append(ctx->arena, scopes, (var_pool_t){ .head = NULL });
+
+    for (usize i = 0; i < declarations->size; ++i) {
+        resolve_variable(ctx, scopes, declarations->items[i]);
+    }
+
+    scopes->size -= 1;
+}
+
 const char *intern(arena_t *arena, const char *s)
 {
     string_pool_entry_t *current = string_pool.head;
@@ -2036,38 +2199,36 @@ var_pool_entry_t *get_var_entry(var_pool_t *pool, const char *s)
     return NULL;
 }
 
-var_pool_entry_t *get_var_in_scope(environment_t *env, const char *s)
+var_pool_entry_t *get_var_in_scope(environment_t *global_env, environment_t *env, int depth,
+                                   const char *s)
 {
-    environment_t *current = env;
+    if (depth == -1)
+        return get_var_entry(&global_env->pool, s);
 
-    while (current) {
-        var_pool_entry_t *var_entry = get_var_entry(&current->pool, s);
-        if (var_entry)
-            return var_entry;
+    environment_t *anc = ancestor(global_env, env, depth);
 
-        current = current->parent_env;
-    }
+    var_pool_entry_t *var_entry = get_var_entry(&anc->pool, s);
+    if (var_entry)
+        return var_entry;
 
     return NULL;
 }
 
-err set_var_in_scope(arena_t *arena, environment_t *env, const char *s, value_t value)
+err set_var_in_scope(arena_t *arena, environment_t *global_env, environment_t *env, int depth,
+                     const char *s, value_t value)
 {
-    environment_t *current = env;
+    if (depth == -1)
+        return set_var_entry(arena, &global_env->pool, s, value);
 
-    while (current) {
-        var_pool_entry_t *var_entry = get_var_entry(&current->pool, s);
+    environment_t *anc = ancestor(global_env, env, depth);
+    var_pool_entry_t *var_entry = get_var_entry(&anc->pool, s);
+    if (var_entry) {
+        var_entry->value = value;
 
-        if (var_entry) {
-            var_entry->value = value;
-
-            return 0;
-        }
-
-        current = current->parent_env;
+        return 0;
     }
 
-    return set_var_entry(arena, &env->pool, s, value);
+    return 1;
 }
 
 bool parser_is_eof(parser_t *parser)
@@ -2209,28 +2370,29 @@ bool interpret_comparison(token_type_t op, value_t a, value_t b)
     }
 }
 
-eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *env)
+eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *global_env,
+                               environment_t *env)
 {
     assert(node->type == NODE_BINARY);
 
     switch (node->value.binary.op.type) {
     case OR: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
         return is_truthy(left.value) ? left : right;
     }
 
     case AND: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
         return is_truthy(left.value) ? right : left;
     }
 
     case EQUAL_EQUAL: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
         return create_eval_result(
             EVAL_OK,
@@ -2238,8 +2400,8 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
     }
 
     case BANG_EQUAL: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
         return create_eval_result(
             EVAL_OK, create_value(VALUE_BOOL,
@@ -2250,8 +2412,8 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
     case LESS_EQUAL:
     case GREATER:
     case GREATER_EQUAL: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
         if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
             return create_eval_error();
@@ -2264,8 +2426,8 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
     }
 
     case PLUS: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
         if (left.value.type == VALUE_STRING || right.value.type == VALUE_STRING) {
             const char *left_str = stringify_value(ctx->arena, left.value);
@@ -2286,8 +2448,8 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
                                                                         right.value.as.number }));
     }
     case MINUS: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
         if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
             return create_eval_error();
@@ -2298,8 +2460,8 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
     }
 
     case STAR: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
         if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
             return create_eval_error();
@@ -2310,8 +2472,8 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
     }
 
     case SLASH: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, env);
+        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
         if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
             return create_eval_error();
@@ -2329,8 +2491,8 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
     }
 
     case COMMA: {
-        interpret(ctx, node->value.binary.left, env);
-        return interpret(ctx, node->value.binary.right, env);
+        interpret(ctx, node->value.binary.left, global_env, env);
+        return interpret(ctx, node->value.binary.right, global_env, env);
     }
 
     default: {
@@ -2339,19 +2501,21 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
     }
 }
 
-eval_result_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *env)
+eval_result_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *global_env,
+                              environment_t *env)
 {
     switch (node->value.unary.op.type) {
     case BANG: {
         return create_eval_result(
             EVAL_OK,
             create_value(VALUE_BOOL,
-                         (value_as_t){ .boolean = !is_truthy(
-                                           interpret(ctx, node->value.unary.child, env).value) }));
+                         (value_as_t){
+                             .boolean = !is_truthy(
+                                 interpret(ctx, node->value.unary.child, global_env, env).value) }));
     }
 
     case MINUS: {
-        eval_result_t child = interpret(ctx, node->value.unary.child, env);
+        eval_result_t child = interpret(ctx, node->value.unary.child, global_env, env);
         if (!check_number_operand(ctx, node->value.unary.op, child.value))
             return create_eval_error();
 
@@ -2360,7 +2524,7 @@ eval_result_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *e
     }
 
     case PLUS: {
-        eval_result_t child = interpret(ctx, node->value.unary.child, env);
+        eval_result_t child = interpret(ctx, node->value.unary.child, global_env, env);
         if (!check_number_operand(ctx, node->value.unary.op, child.value))
             return create_eval_error();
 
@@ -2374,16 +2538,19 @@ eval_result_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *e
     }
 }
 
-eval_result_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *env)
+eval_result_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *global_env,
+                                environment_t *env)
 {
-    bool condition = is_truthy(interpret(ctx, node->value.ternary.condition, env).value);
+    bool condition =
+        is_truthy(interpret(ctx, node->value.ternary.condition, global_env, env).value);
     if (condition)
-        return interpret(ctx, node->value.ternary.true_branch, env);
+        return interpret(ctx, node->value.ternary.true_branch, global_env, env);
 
-    return interpret(ctx, node->value.ternary.false_branch, env);
+    return interpret(ctx, node->value.ternary.false_branch, global_env, env);
 }
 
-eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
+eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *global_env,
+                        environment_t *env)
 {
     assert(node);
 
@@ -2430,7 +2597,8 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     }
 
     case NODE_IDENTIFIER: {
-        var_pool_entry_t *entry = get_var_in_scope(env, node->value.identifier.name);
+        var_pool_entry_t *entry = get_var_in_scope(global_env, env, node->value.identifier.depth,
+                                                   node->value.identifier.name);
         source_loc_t loc = node->value.identifier.loc;
 
         if (!entry) {
@@ -2449,17 +2617,18 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     }
 
     case NODE_BINARY:
-        return interpret_binary(ctx, node, env);
+        return interpret_binary(ctx, node, global_env, env);
 
     case NODE_UNARY:
-        return interpret_unary(ctx, node, env);
+        return interpret_unary(ctx, node, global_env, env);
 
     case NODE_TERNARY:
-        return interpret_ternary(ctx, node, env);
+        return interpret_ternary(ctx, node, global_env, env);
 
     case NODE_PRINT: {
         printf("%s\n",
-               stringify_value(ctx->arena, interpret(ctx, node->value.print_stmt, env).value));
+               stringify_value(ctx->arena,
+                               interpret(ctx, node->value.print_stmt, global_env, env).value));
 
         return create_eval_ok();
     }
@@ -2476,7 +2645,8 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         }
 
         if (set_var_entry(ctx->arena, &env->pool, identifier,
-                          interpret(ctx, node->value.var_decl.expression, env).value) != 0)
+                          interpret(ctx, node->value.var_decl.expression, global_env, env).value) !=
+            0)
             return create_eval_error();
 
         return create_eval_ok();
@@ -2484,7 +2654,8 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     case NODE_ASSIGN: {
         const char *var_name = node->value.assign.identifier->value.identifier.name;
         source_loc_t loc = node->value.assign.identifier->value.identifier.loc;
-        var_pool_entry_t *var_entry = get_var_in_scope(env, var_name);
+        var_pool_entry_t *var_entry = get_var_in_scope(
+            global_env, env, node->value.assign.identifier->value.identifier.depth, var_name);
 
         if (!var_entry) {
             report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
@@ -2492,8 +2663,9 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
             return create_eval_error();
         }
 
-        eval_result_t value = interpret(ctx, node->value.assign.expression, env);
-        if (set_var_in_scope(ctx->arena, env, var_name, value.value) != 0)
+        eval_result_t value = interpret(ctx, node->value.assign.expression, global_env, env);
+        int depth = node->value.assign.identifier->value.identifier.depth;
+        if (set_var_in_scope(ctx->arena, global_env, env, depth, var_name, value.value) != 0)
             return create_eval_error();
 
         assert(value.type == EVAL_OK);
@@ -2504,22 +2676,22 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
     case NODE_BLOCK: {
         environment_t *local_env = create_env(ctx->arena, env);
 
-        return run_declarations(ctx, node->value.block_declarations, local_env);
+        return run_declarations(ctx, node->value.block_declarations, global_env, local_env);
     };
 
     case NODE_IF: {
         assert(node->value.if_stmt.condition);
 
-        eval_result_t condition = interpret(ctx, node->value.if_stmt.condition, env);
+        eval_result_t condition = interpret(ctx, node->value.if_stmt.condition, global_env, env);
 
         if (is_truthy(condition.value)) {
             assert(node->value.if_stmt.then_branch);
 
-            eval_result_t result = interpret(ctx, node->value.if_stmt.then_branch, env);
+            eval_result_t result = interpret(ctx, node->value.if_stmt.then_branch, global_env, env);
             if (result.type != EVAL_OK)
                 return result;
         } else if (node->value.if_stmt.else_branch) {
-            eval_result_t result = interpret(ctx, node->value.if_stmt.else_branch, env);
+            eval_result_t result = interpret(ctx, node->value.if_stmt.else_branch, global_env, env);
             if (result.type != EVAL_OK)
                 return result;
         }
@@ -2531,8 +2703,8 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         assert(node->value.while_stmt.condition);
         assert(node->value.while_stmt.body);
 
-        while (is_truthy(interpret(ctx, node->value.while_stmt.condition, env).value)) {
-            eval_result_t result = interpret(ctx, node->value.while_stmt.body, env);
+        while (is_truthy(interpret(ctx, node->value.while_stmt.condition, global_env, env).value)) {
+            eval_result_t result = interpret(ctx, node->value.while_stmt.body, global_env, env);
 
             if (result.type == EVAL_BREAK)
                 break;
@@ -2551,10 +2723,11 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         environment_t *local_env = create_env(ctx->arena, env);
 
         if (node->value.for_stmt.initializer)
-            interpret(ctx, node->value.for_stmt.initializer, local_env);
+            interpret(ctx, node->value.for_stmt.initializer, global_env, local_env);
 
-        while ((condition ? is_truthy(interpret(ctx, condition, local_env).value) : true)) {
-            eval_result_t result = interpret(ctx, node->value.for_stmt.body, local_env);
+        while ((condition ? is_truthy(interpret(ctx, condition, global_env, local_env).value) :
+                            true)) {
+            eval_result_t result = interpret(ctx, node->value.for_stmt.body, global_env, local_env);
 
             if (result.type == EVAL_BREAK)
                 break;
@@ -2563,7 +2736,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
                 return result;
 
             if (node->value.for_stmt.increment)
-                interpret(ctx, node->value.for_stmt.increment, local_env);
+                interpret(ctx, node->value.for_stmt.increment, global_env, local_env);
         }
 
         return create_eval_ok();
@@ -2575,12 +2748,13 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
     case NODE_RETURN: {
         ast_node_t *value = node->value.return_value;
-        return create_eval_result(EVAL_RETURN, value ? interpret(ctx, value, env).value :
-                                                       create_value(VALUE_NIL, (value_as_t){}));
+        return create_eval_result(EVAL_RETURN, value ?
+                                                   interpret(ctx, value, global_env, env).value :
+                                                   create_value(VALUE_NIL, (value_as_t){}));
     }
 
     case NODE_CALL: {
-        eval_result_t callee_result = interpret(ctx, node->value.call.callee, env);
+        eval_result_t callee_result = interpret(ctx, node->value.call.callee, global_env, env);
         source_loc_t loc = node->value.call.loc;
 
         if (callee_result.value.type != VALUE_FUN) {
@@ -2610,7 +2784,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
 
         if (args) {
             for (usize i = 0; i < args->size; ++i) {
-                eval_result_t result = interpret(ctx, args->items[i], env);
+                eval_result_t result = interpret(ctx, args->items[i], global_env, env);
 
                 if (set_var_entry(ctx->arena, &local_env->pool,
                                   params->items[i]->value.identifier.name, result.value) != 0)
@@ -2621,7 +2795,8 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *env)
         ast_node_t *body = callee_result.value.as.fun_def.body;
         assert(body);
 
-        eval_result_t result = run_declarations(ctx, body->value.block_declarations, local_env);
+        eval_result_t result =
+            run_declarations(ctx, body->value.block_declarations, global_env, local_env);
 
         if (result.type == EVAL_OK)
             return create_eval_result(EVAL_OK, create_value(VALUE_NIL, (value_as_t){}));
@@ -2712,4 +2887,17 @@ environment_t *create_env(arena_t *arena, environment_t *parent)
     env->pool.head = NULL;
 
     return env;
+}
+
+environment_t *ancestor(environment_t *global_env, environment_t *env, int depth)
+{
+    if (depth == -1)
+        return global_env;
+
+    environment_t *current = env;
+    for (int i = 0; i < depth; ++i) {
+        current = current->parent_env;
+    }
+
+    return current;
 }
