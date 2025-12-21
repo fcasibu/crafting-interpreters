@@ -11,6 +11,8 @@
 #define LANG_NAME "lox"
 #define LANG_NAME_LEN 3
 
+typedef u32 node_id;
+
 // clang-format off
 typedef enum {
   // Single-character tokens.
@@ -61,7 +63,7 @@ typedef union {
     struct {
         const char *name;
         struct ast_nodes *params;
-        struct ast_node *body;
+        node_id body;
         struct environment *closure;
     } fun_def;
 } value_as_t;
@@ -120,65 +122,65 @@ typedef union {
     } identifier;
 
     struct {
-        struct ast_node *child;
+        node_id child;
         token_t op;
     } unary;
 
     struct {
-        struct ast_node *left;
-        struct ast_node *right;
+        node_id left;
+        node_id right;
         token_t op;
     } binary;
 
     struct {
-        struct ast_node *condition;
-        struct ast_node *true_branch;
-        struct ast_node *false_branch;
+        node_id condition;
+        node_id true_branch;
+        node_id false_branch;
     } ternary;
 
-    struct ast_node *print_stmt;
+    node_id print_stmt;
 
     struct {
-        struct ast_node *condition;
-        struct ast_node *then_branch;
-        struct ast_node *else_branch;
+        node_id condition;
+        node_id then_branch;
+        node_id else_branch;
     } if_stmt;
 
     struct {
-        struct ast_node *condition;
-        struct ast_node *body;
+        node_id condition;
+        node_id body;
     } while_stmt;
 
     struct {
-        struct ast_node *initializer;
-        struct ast_node *condition;
-        struct ast_node *increment;
-        struct ast_node *body;
+        node_id initializer;
+        node_id condition;
+        node_id increment;
+        node_id body;
     } for_stmt;
 
-    struct ast_node *return_value;
+    node_id return_value;
 
     struct {
-        struct ast_node *identifier;
-        struct ast_node *expression;
+        node_id identifier;
+        node_id expression;
     } var_decl;
 
     struct {
         struct ast_nodes *params;
-        struct ast_node *name;
-        struct ast_node *body;
+        node_id name;
+        node_id body;
     } fun_decl;
 
     struct {
-        struct ast_node *identifier;
-        struct ast_node *expression;
+        node_id identifier;
+        node_id expression;
     } assign;
 
     struct ast_nodes *block_declarations;
 
     struct {
         struct ast_nodes *args;
-        struct ast_node *callee;
+        node_id callee;
         // TODO(fcasibu): ok twice now, so refactor source location later
         source_loc_t loc;
     } call;
@@ -191,19 +193,26 @@ typedef struct ast_node {
     node_value_t value;
     usize start;
     usize end;
+    node_id id;
 } ast_node_t;
 
 typedef struct ast_nodes {
-    ast_node_t **items;
+    node_id *items;
     usize size;
     usize capacity;
 } ast_nodes_t;
 
 typedef struct {
+    ast_node_t *items;
+    usize size;
+    usize capacity;
+} node_buffer_t;
+
+typedef struct {
     token_t *tokens;
     usize tokens_size;
 
-    ast_node_t *root;
+    node_id root_id;
     usize current_index;
 
     usize loop_depth;
@@ -272,6 +281,8 @@ typedef struct {
     const char *source_filename;
     usize source_len;
     const char *cmd;
+
+    node_buffer_t nodes;
 } context_t;
 
 void lexer_tokenize(context_t *ctx, lexer_t *lexer);
@@ -291,36 +302,36 @@ bool lexer_is_alphanum(char ch);
 token_type_t lexer_lookup_keyword(const char *s);
 
 void parser_parse(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_declaration(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_var_declaration(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_fun_declaration(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_block(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_if_stmt(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_while_stmt(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_for_stmt(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_print_stmt(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_expression(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_assignment(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_ternary(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_logical_or(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_logical_and(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_equality(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_comparison(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_term(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_factor(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_unary(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_call(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_primary(context_t *ctx, parser_t *parser);
+node_id parser_parse_declaration(context_t *ctx, parser_t *parser);
+node_id parser_parse_var_declaration(context_t *ctx, parser_t *parser);
+node_id parser_parse_fun_declaration(context_t *ctx, parser_t *parser);
+node_id parser_parse_statement(context_t *ctx, parser_t *parser);
+node_id parser_parse_block(context_t *ctx, parser_t *parser);
+node_id parser_parse_if_stmt(context_t *ctx, parser_t *parser);
+node_id parser_parse_while_stmt(context_t *ctx, parser_t *parser);
+node_id parser_parse_for_stmt(context_t *ctx, parser_t *parser);
+node_id parser_parse_print_stmt(context_t *ctx, parser_t *parser);
+node_id parser_parse_expression(context_t *ctx, parser_t *parser);
+node_id parser_parse_assignment(context_t *ctx, parser_t *parser);
+node_id parser_parse_ternary(context_t *ctx, parser_t *parser);
+node_id parser_parse_logical_or(context_t *ctx, parser_t *parser);
+node_id parser_parse_logical_and(context_t *ctx, parser_t *parser);
+node_id parser_parse_equality(context_t *ctx, parser_t *parser);
+node_id parser_parse_comparison(context_t *ctx, parser_t *parser);
+node_id parser_parse_term(context_t *ctx, parser_t *parser);
+node_id parser_parse_factor(context_t *ctx, parser_t *parser);
+node_id parser_parse_unary(context_t *ctx, parser_t *parser);
+node_id parser_parse_call(context_t *ctx, parser_t *parser);
+node_id parser_parse_primary(context_t *ctx, parser_t *parser);
 ast_nodes_t *parser_parse_args(context_t *ctx, parser_t *parser);
 ast_nodes_t *parser_parse_params(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_fun_expr(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_number(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_string(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_boolean(context_t *ctx, parser_t *parser);
-ast_node_t *parser_parse_identifier(context_t *ctx, parser_t *parser);
-ast_node_t *parser_create_node(arena_t *arena, node_type_t type, node_value_t value, usize start,
-                               usize end);
+node_id parser_parse_fun_expr(context_t *ctx, parser_t *parser);
+node_id parser_parse_number(context_t *ctx, parser_t *parser);
+node_id parser_parse_string(context_t *ctx, parser_t *parser);
+node_id parser_parse_boolean(context_t *ctx, parser_t *parser);
+node_id parser_parse_identifier(context_t *ctx, parser_t *parser);
+node_id parser_create_node(context_t *ctx, node_type_t type, node_value_t value, usize start,
+                           usize end);
 token_t parser_peek(parser_t *parser);
 token_t parser_previous(parser_t *parser);
 token_t parser_advance(parser_t *parser);
@@ -328,19 +339,19 @@ void parser_consume(context_t *ctx, parser_t *parser, token_type_t type, const c
 bool parser_match_any(parser_t *parser, const token_type_t *types, usize count);
 bool parser_is_eof(parser_t *parser);
 void parser_synchronize(parser_t *parser);
+ast_node_t *get_node(context_t *ctx, node_id id);
 
-void resolve_variable(context_t *ctx, scopes_t *scopes, ast_node_t *node);
+void resolve_variable(context_t *ctx, scopes_t *scopes, node_id id);
 void resolve_variables(context_t *ctx, scopes_t *scopes, ast_nodes_t *declarations);
 
 bool interpret_comparison(token_type_t op, value_t a, value_t b);
-eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *global_env,
+eval_result_t interpret_binary(context_t *ctx, node_id id, environment_t *global_env,
                                environment_t *env);
-eval_result_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *global_env,
+eval_result_t interpret_unary(context_t *ctx, node_id id, environment_t *global_env,
                               environment_t *env);
-eval_result_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *global_env,
+eval_result_t interpret_ternary(context_t *ctx, node_id id, environment_t *global_env,
                                 environment_t *env);
-eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *global_env,
-                        environment_t *env);
+eval_result_t interpret(context_t *ctx, node_id id, environment_t *global_env, environment_t *env);
 eval_result_t create_eval_ok(void);
 eval_result_t create_eval_error(void);
 eval_result_t create_eval_break(void);
@@ -422,11 +433,16 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    context_t ctx = { .source_filename = source_filename,
-                      .source = source,
-                      .arena = &arena,
-                      .source_len = strlen(source),
-                      .cmd = argv[1] };
+    context_t ctx = {
+        .source_filename = source_filename,
+        .source = source,
+        .arena = &arena,
+        .source_len = strlen(source),
+        .cmd = argv[1],
+        .nodes = { 0 },
+    };
+
+    arena_da_init(&arena, &ctx.nodes, 256);
 
     run(&ctx);
 
@@ -461,10 +477,11 @@ void run(context_t *ctx)
     scopes_t scopes = { 0 };
     arena_da_init(ctx->arena, &scopes, 16);
 
-    resolve_variables(ctx, &scopes, parser.root->value.prog_declarations);
+    resolve_variables(ctx, &scopes, get_node(ctx, parser.root_id)->value.prog_declarations);
 
     environment_t *global_env = create_env(ctx->arena, NULL);
-    run_declarations(ctx, parser.root->value.prog_declarations, global_env, global_env);
+    run_declarations(ctx, get_node(ctx, parser.root_id)->value.prog_declarations, global_env,
+                     global_env);
 
     // print_ast(parser.root, 0);
 }
@@ -473,6 +490,7 @@ eval_result_t run_declarations(context_t *ctx, ast_nodes_t *declarations, enviro
                                environment_t *env)
 {
     for (usize i = 0; i < declarations->size; ++i) {
+        ast_node_t *node = get_node(ctx, declarations->items[i]);
         eval_result_t result = interpret(ctx, declarations->items[i], global_env, env);
 
         if (result.type == EVAL_RETURN || result.type == EVAL_BREAK)
@@ -483,8 +501,7 @@ eval_result_t run_declarations(context_t *ctx, ast_nodes_t *declarations, enviro
             return result;
         }
 
-        if (declarations->items[i]->type == NODE_CALL ||
-            declarations->items[i]->type == NODE_ASSIGN || strcmp(ctx->cmd, "run") == 0)
+        if (node->type == NODE_CALL || node->type == NODE_ASSIGN || strcmp(ctx->cmd, "run") == 0)
             continue;
 
         switch (result.value.type) {
@@ -512,35 +529,63 @@ eval_result_t run_declarations(context_t *ctx, ast_nodes_t *declarations, enviro
     return create_eval_ok();
 }
 
+#define NULL_NODE 0
+
+ast_node_t *get_node(context_t *ctx, node_id id)
+{
+    if (id == NULL_NODE)
+        return NULL;
+
+    return &ctx->nodes.items[id - 1];
+}
+
+node_id parser_create_node(context_t *ctx, node_type_t type, node_value_t value, usize start,
+                           usize end)
+{
+    ast_node_t node = {
+        .type = type,
+        .value = value,
+        .start = start,
+        .end = end,
+        .id = ctx->nodes.size + 1,
+    };
+
+    arena_da_append(ctx->arena, &ctx->nodes, node);
+    return node.id;
+}
+
 void parser_parse(context_t *ctx, parser_t *parser)
 {
     ast_nodes_t *prog_declarations = arena_alloc(ctx->arena, sizeof(*prog_declarations));
     arena_da_init(ctx->arena, prog_declarations, 256);
 
     while (parser->current_index < parser->tokens_size && !parser_is_eof(parser)) {
-        ast_node_t *node = parser_parse_declaration(ctx, parser);
+        node_id node = parser_parse_declaration(ctx, parser);
 
-        if (!node)
+        if (node == NULL_NODE)
             continue;
 
         arena_da_append(ctx->arena, prog_declarations, node);
     }
 
-    parser->root = parser_create_node(
-        ctx->arena, NODE_PROGRAM, (node_value_t){ .prog_declarations = prog_declarations }, 0,
-        prog_declarations->size > 0 ? prog_declarations->items[prog_declarations->size - 1]->end :
-                                      0);
+    usize end = 0;
+    if (prog_declarations->size > 0) {
+        end = get_node(ctx, prog_declarations->items[prog_declarations->size - 1])->end;
+    }
+
+    parser->root_id = parser_create_node(
+        ctx, NODE_PROGRAM, (node_value_t){ .prog_declarations = prog_declarations }, 0, end);
 }
 
-ast_node_t *parser_parse_declaration(context_t *ctx, parser_t *parser)
+node_id parser_parse_declaration(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_peek(parser);
 
     switch (tok.type) {
     case VAR: {
-        ast_node_t *node = parser_parse_var_declaration(ctx, parser);
+        node_id node = parser_parse_var_declaration(ctx, parser);
 
-        if (!node)
+        if (node == NULL_NODE)
             parser_synchronize(parser);
 
         parser_consume(ctx, parser, SEMICOLON, "Expected ';' at the end of 'var' declaration");
@@ -549,10 +594,10 @@ ast_node_t *parser_parse_declaration(context_t *ctx, parser_t *parser)
     }
     case FUN: {
         parser->function_depth += 1;
-        ast_node_t *node = parser_parse_fun_declaration(ctx, parser);
+        node_id node = parser_parse_fun_declaration(ctx, parser);
         parser->function_depth -= 1;
 
-        if (!node)
+        if (node == NULL_NODE)
             parser_synchronize(parser);
 
         if (parser_match(parser, SEMICOLON))
@@ -565,60 +610,62 @@ ast_node_t *parser_parse_declaration(context_t *ctx, parser_t *parser)
     }
 }
 
-ast_node_t *parser_parse_var_declaration(context_t *ctx, parser_t *parser)
+node_id parser_parse_var_declaration(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_advance(parser);
     if (tok.type != VAR) {
         report_unexpected_token(ctx, parser_previous(parser), "var");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *identifier = parser_parse_identifier(ctx, parser);
+    node_id identifier = parser_parse_identifier(ctx, parser);
 
-    if (!identifier)
-        return NULL;
+    if (identifier == NULL_NODE)
+        return NULL_NODE;
 
-    if (parser_match(parser, SEMICOLON))
-        return parser_create_node(
-            ctx->arena, NODE_VAR,
-            (node_value_t){ .var_decl.identifier = identifier,
-                            .var_decl.expression = parser_create_node(
-                                ctx->arena, NODE_UNINITIALIZED, (node_value_t){}, 0, 0) },
-            tok.cursor, identifier->end);
+    usize id_end = get_node(ctx, identifier)->end;
+
+    if (parser_match(parser, SEMICOLON)) {
+        node_id uninit = parser_create_node(ctx, NODE_UNINITIALIZED, (node_value_t){}, 0, 0);
+        return parser_create_node(ctx, NODE_VAR,
+                                  (node_value_t){ .var_decl.identifier = identifier,
+                                                  .var_decl.expression = uninit },
+                                  tok.cursor, id_end);
+    }
 
     if (parser_advance(parser).type != EQUAL) {
         report_unexpected_token(ctx, parser_previous(parser), "=");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *expression = parser_parse_expression(ctx, parser);
+    node_id expression = parser_parse_expression(ctx, parser);
 
-    if (!expression) {
+    if (expression == NULL_NODE) {
         report_error_at_token(ctx, parser_previous(parser), "Expected expression after '='");
-        return NULL;
+        return NULL_NODE;
     }
 
-    return parser_create_node(ctx->arena, NODE_VAR,
+    return parser_create_node(ctx, NODE_VAR,
                               (node_value_t){ .var_decl.identifier = identifier,
                                               .var_decl.expression = expression },
-                              tok.cursor, identifier->end);
+                              tok.cursor, id_end);
 }
 
-ast_node_t *parser_parse_fun_declaration(context_t *ctx, parser_t *parser)
+node_id parser_parse_fun_declaration(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_advance(parser);
     if (tok.type != FUN) {
         report_unexpected_token(ctx, parser_previous(parser), "fun");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *name = parser_parse_identifier(ctx, parser);
-    if (!name)
-        return NULL;
+    node_id name = parser_parse_identifier(ctx, parser);
+    if (name == NULL_NODE)
+        return NULL_NODE;
 
     if (parser_advance(parser).type != LEFT_PAREN) {
         report_unexpected_token(ctx, parser_previous(parser), "(");
-        return NULL;
+        return NULL_NODE;
     }
 
     ast_nodes_t *params = NULL;
@@ -629,21 +676,21 @@ ast_node_t *parser_parse_fun_declaration(context_t *ctx, parser_t *parser)
 
     if (parser_advance(parser).type != RIGHT_PAREN) {
         report_error_at_token(ctx, parser_previous(parser), "Expected ')' after parameters.");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *body = parser_parse_block(ctx, parser);
+    node_id body = parser_parse_block(ctx, parser);
 
-    if (!body) {
+    if (body == NULL_NODE) {
         report_error_at_token(ctx, tok, "Expected function body");
-        return NULL;
+        return NULL_NODE;
     }
 
     node_value_t value = { .fun_decl = { .name = name, .params = params, .body = body } };
-    return parser_create_node(ctx->arena, NODE_FUN, value, tok.cursor, body->end);
+    return parser_create_node(ctx, NODE_FUN, value, tok.cursor, get_node(ctx, body)->end);
 }
 
-ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
+node_id parser_parse_statement(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_peek(parser);
 
@@ -655,13 +702,14 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
             report_error_at_token(ctx, parser_previous(parser),
                                   "Syntax Error: Invalid return statement");
 
-        ast_node_t *node = parser_parse_expression(ctx, parser);
+        node_id node = parser_parse_expression(ctx, parser);
 
-        if (!node || node->type != NODE_FUN)
+        if (node == NULL_NODE || get_node(ctx, node)->type != NODE_FUN)
             parser_consume(ctx, parser, SEMICOLON, "Expected ';' after return");
 
-        return parser_create_node(ctx->arena, NODE_RETURN, (node_value_t){ .return_value = node },
-                                  tok.cursor, node ? node->end : tok.cursor + tok.lexeme_len - 1);
+        usize end = node != NULL_NODE ? get_node(ctx, node)->end : tok.cursor + tok.lexeme_len - 1;
+        return parser_create_node(ctx, NODE_RETURN, (node_value_t){ .return_value = node },
+                                  tok.cursor, end);
     }
 
     case BREAK: {
@@ -673,12 +721,12 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
 
         parser_consume(ctx, parser, SEMICOLON, "Expected ';' after break");
 
-        return parser_create_node(ctx->arena, NODE_BREAK, (node_value_t){}, tok.cursor, tok.cursor);
+        return parser_create_node(ctx, NODE_BREAK, (node_value_t){}, tok.cursor, tok.cursor);
     }
 
     case FOR: {
         parser->loop_depth += 1;
-        ast_node_t *node = parser_parse_for_stmt(ctx, parser);
+        node_id node = parser_parse_for_stmt(ctx, parser);
         parser->loop_depth -= 1;
 
         return node;
@@ -686,7 +734,7 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
 
     case WHILE: {
         parser->loop_depth += 1;
-        ast_node_t *node = parser_parse_while_stmt(ctx, parser);
+        node_id node = parser_parse_while_stmt(ctx, parser);
         parser->loop_depth -= 1;
 
         return node;
@@ -700,11 +748,11 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
         parser_advance(parser);
         report(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source, tok.line_start,
                "Missing 'if' statement");
-        return NULL;
+        return NULL_NODE;
     }
 
     case PRINT: {
-        ast_node_t *node = parser_parse_print_stmt(ctx, parser);
+        node_id node = parser_parse_print_stmt(ctx, parser);
 
         parser_consume(ctx, parser, SEMICOLON, "Expected ';' after print statement");
 
@@ -716,11 +764,11 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
     }
 
     default: {
-        ast_node_t *node = parser_parse_expression(ctx, parser);
+        node_id node = parser_parse_expression(ctx, parser);
 
-        if (!node) {
+        if (node == NULL_NODE) {
             parser_synchronize(parser);
-            return NULL;
+            return NULL_NODE;
         }
 
         parser_consume(ctx, parser, SEMICOLON, "Expected ';' after expression");
@@ -730,21 +778,21 @@ ast_node_t *parser_parse_statement(context_t *ctx, parser_t *parser)
     }
 }
 
-ast_node_t *parser_parse_block(context_t *ctx, parser_t *parser)
+node_id parser_parse_block(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_advance(parser);
     if (tok.type != LEFT_BRACE) {
         report_unexpected_token(ctx, parser_previous(parser), "{");
-        return NULL;
+        return NULL_NODE;
     }
 
     ast_nodes_t *block_declarations = arena_alloc(ctx->arena, sizeof(*block_declarations));
     arena_da_init(ctx->arena, block_declarations, 256);
 
     while (!parser_match(parser, RIGHT_BRACE) && !parser_is_eof(parser)) {
-        ast_node_t *node = parser_parse_declaration(ctx, parser);
+        node_id node = parser_parse_declaration(ctx, parser);
 
-        if (!node)
+        if (node == NULL_NODE)
             continue;
 
         arena_da_append(ctx->arena, block_declarations, node);
@@ -754,132 +802,134 @@ ast_node_t *parser_parse_block(context_t *ctx, parser_t *parser)
     if (end_tok.type != RIGHT_BRACE) {
         report(end_tok.line - 1, end_tok.col - 1, ctx->source_filename, ctx->source,
                end_tok.line_start, "Unterminated block.");
-        return NULL;
+        return NULL_NODE;
     }
 
-    return parser_create_node(ctx->arena, NODE_BLOCK,
+    return parser_create_node(ctx, NODE_BLOCK,
                               (node_value_t){ .block_declarations = block_declarations },
                               tok.cursor, end_tok.cursor);
 }
 
-ast_node_t *parser_parse_if_stmt(context_t *ctx, parser_t *parser)
+node_id parser_parse_if_stmt(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_advance(parser);
     if (tok.type != IF) {
         report_unexpected_token(ctx, parser_previous(parser), "if");
-        return NULL;
+        return NULL_NODE;
     }
 
     token_t left_paren_tok = parser_advance(parser);
     if (left_paren_tok.type != LEFT_PAREN) {
         report_unexpected_token(ctx, parser_previous(parser), "(");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *condition = parser_parse_expression(ctx, parser);
+    node_id condition = parser_parse_expression(ctx, parser);
 
-    if (!condition) {
+    if (condition == NULL_NODE) {
         report_error_at_token(ctx, parser_previous(parser),
                               "Expected if statement condition within parentheses");
-        return NULL;
+        return NULL_NODE;
     }
 
     if (parser_advance(parser).type != RIGHT_PAREN) {
         report_error_at_token(ctx, left_paren_tok, "Expected closing parenthesis");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *then_branch = parser_parse_statement(ctx, parser);
+    node_id then_branch = parser_parse_statement(ctx, parser);
 
-    if (!then_branch) {
+    if (then_branch == NULL_NODE) {
         report_error_at_token(ctx, parser_previous(parser), "Expected statement after 'if (cond)'");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *else_branch = NULL;
+    node_id else_branch = NULL_NODE;
 
     if (parser_match(parser, ELSE)) {
         token_t else_token = parser_advance(parser);
         else_branch = parser_parse_statement(ctx, parser);
 
-        if (!else_branch) {
+        if (else_branch == NULL_NODE) {
             report_error_at_token(ctx, else_token, "Expected statement after 'else'");
 
-            return NULL;
+            return NULL_NODE;
         }
     }
 
-    return parser_create_node(ctx->arena, NODE_IF,
+    usize end = else_branch != NULL_NODE ? get_node(ctx, else_branch)->end :
+                                           get_node(ctx, then_branch)->end;
+    return parser_create_node(ctx, NODE_IF,
                               (node_value_t){ .if_stmt = {
                                                   .condition = condition,
                                                   .then_branch = then_branch,
                                                   .else_branch = else_branch,
                                               } },
                                 tok.cursor,
-                                else_branch ? else_branch->end : then_branch->end
+                                end
                               );
 }
 
-ast_node_t *parser_parse_while_stmt(context_t *ctx, parser_t *parser)
+node_id parser_parse_while_stmt(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_advance(parser);
     if (tok.type != WHILE) {
         report_unexpected_token(ctx, parser_previous(parser), "while");
-        return NULL;
+        return NULL_NODE;
     }
 
     token_t left_paren_tok = parser_advance(parser);
     if (left_paren_tok.type != LEFT_PAREN) {
         report_unexpected_token(ctx, parser_previous(parser), "(");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *condition = parser_parse_expression(ctx, parser);
+    node_id condition = parser_parse_expression(ctx, parser);
 
-    if (!condition) {
+    if (condition == NULL_NODE) {
         report_error_at_token(ctx, parser_previous(parser),
                               "Expected if statement condition within parentheses");
-        return NULL;
+        return NULL_NODE;
     }
 
     if (parser_advance(parser).type != RIGHT_PAREN) {
         report_error_at_token(ctx, left_paren_tok, "Expected closing parenthesis");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *body = parser_parse_statement(ctx, parser);
+    node_id body = parser_parse_statement(ctx, parser);
 
-    if (!body) {
+    if (body == NULL_NODE) {
         report_error_at_token(ctx, parser_previous(parser),
                               "Expected statement after 'while (cond)'");
-        return NULL;
+        return NULL_NODE;
     }
 
-    return parser_create_node(ctx->arena, NODE_WHILE,
+    return parser_create_node(ctx, NODE_WHILE,
                               (node_value_t){ .while_stmt = {
                                                   .condition = condition,
                                                   .body = body,
                                               } },
                                 tok.cursor,
-                                body->end
+                                get_node(ctx, body)->end
                               );
 }
 
-ast_node_t *parser_parse_for_stmt(context_t *ctx, parser_t *parser)
+node_id parser_parse_for_stmt(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_advance(parser);
     if (tok.type != FOR) {
         report_unexpected_token(ctx, parser_previous(parser), "for");
-        return NULL;
+        return NULL_NODE;
     }
 
     token_t left_paren_tok = parser_advance(parser);
     if (left_paren_tok.type != LEFT_PAREN) {
         report_unexpected_token(ctx, parser_previous(parser), "(");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *initializer;
+    node_id initializer = NULL_NODE;
 
     if (parser_match(parser, VAR)) {
         initializer = parser_parse_var_declaration(ctx, parser);
@@ -887,346 +937,358 @@ ast_node_t *parser_parse_for_stmt(context_t *ctx, parser_t *parser)
         initializer = parser_parse_expression(ctx, parser);
     }
 
-    if (!initializer && !parser_match(parser, SEMICOLON)) {
+    if (initializer == NULL_NODE && !parser_match(parser, SEMICOLON)) {
         parser_advance(parser);
         report_error_at_token(ctx, parser_previous(parser), "Expected for loop initializer or ';'");
-        return NULL;
+        return NULL_NODE;
     }
 
     if (parser_advance(parser).type != SEMICOLON) {
         report_unexpected_token(ctx, parser_previous(parser), ";");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *condition = parser_parse_expression(ctx, parser);
+    node_id condition = parser_parse_expression(ctx, parser);
 
-    if (!condition && !parser_match(parser, SEMICOLON)) {
+    if (condition == NULL_NODE && !parser_match(parser, SEMICOLON)) {
         parser_advance(parser);
         report_error_at_token(ctx, parser_previous(parser), "Expected for loop condition or ';'");
-        return NULL;
+        return NULL_NODE;
     }
 
     if (parser_advance(parser).type != SEMICOLON) {
         report_unexpected_token(ctx, parser_previous(parser), ";");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *increment = parser_parse_expression(ctx, parser);
+    node_id increment = parser_parse_expression(ctx, parser);
 
     if (parser_advance(parser).type != RIGHT_PAREN) {
         report_error_at_token(ctx, left_paren_tok, "Expected closing parenthesis");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *body = parser_parse_statement(ctx, parser);
+    node_id body = parser_parse_statement(ctx, parser);
 
-    if (!body) {
+    if (body == NULL_NODE) {
         report_error_at_token(ctx, parser_previous(parser), "Expected body after 'for'");
-        return NULL;
+        return NULL_NODE;
     }
 
-    return parser_create_node(ctx->arena, NODE_FOR,
+    return parser_create_node(ctx, NODE_FOR,
                               (node_value_t){ .for_stmt = { .initializer = initializer,
                                                             .condition = condition,
                                                             .increment = increment,
                                                             .body = body,
                               } },
-                              tok.cursor, body->end);
+                              tok.cursor, get_node(ctx, body)->end);
 }
 
-ast_node_t *parser_parse_print_stmt(context_t *ctx, parser_t *parser)
+node_id parser_parse_print_stmt(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_advance(parser);
     if (tok.type != PRINT) {
         report_unexpected_token(ctx, parser_previous(parser), "print");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *expression = parser_parse_expression(ctx, parser);
+    node_id expression = parser_parse_expression(ctx, parser);
 
-    if (!expression) {
+    if (expression == NULL_NODE) {
         report_unexpected_token(ctx, parser_previous(parser), "expression");
-        return NULL;
+        return NULL_NODE;
     }
 
-    return parser_create_node(ctx->arena, NODE_PRINT, ((node_value_t){ .print_stmt = expression }),
-                              tok.cursor, expression->end);
+    return parser_create_node(ctx, NODE_PRINT, ((node_value_t){ .print_stmt = expression }),
+                              tok.cursor, get_node(ctx, expression)->end);
 }
 
-ast_node_t *parser_parse_expression(context_t *ctx, parser_t *parser)
+node_id parser_parse_expression(context_t *ctx, parser_t *parser)
 {
-    ast_node_t *left = parser_parse_assignment(ctx, parser);
+    node_id left = parser_parse_assignment(ctx, parser);
 
-    if (!left)
-        return NULL;
+    if (left == NULL_NODE)
+        return NULL_NODE;
 
     while (!parser_is_eof(parser) && parser_match(parser, COMMA)) {
         token_t op = parser_advance(parser);
 
-        ast_node_t *right = parser_parse_expression(ctx, parser);
+        node_id right = parser_parse_expression(ctx, parser);
 
-        if (!right)
-            return NULL;
+        if (right == NULL_NODE)
+            return NULL_NODE;
 
         node_value_t node_value = {
             .binary = { .op = op, .left = left, .right = right },
         };
-        left = parser_create_node(ctx->arena, NODE_BINARY, node_value, left->start, right->start);
+        usize start = get_node(ctx, left)->start;
+        usize right_start = get_node(ctx, right)->start;
+        left = parser_create_node(ctx, NODE_BINARY, node_value, start, right_start);
     }
 
     return left;
 }
 
-ast_node_t *parser_parse_assignment(context_t *ctx, parser_t *parser)
+node_id parser_parse_assignment(context_t *ctx, parser_t *parser)
 {
-    ast_node_t *left = parser_parse_ternary(ctx, parser);
+    node_id left = parser_parse_ternary(ctx, parser);
 
-    if (!left)
-        return NULL;
+    if (left == NULL_NODE)
+        return NULL_NODE;
 
     if (parser_match(parser, EQUAL)) {
-        if (left->type != NODE_IDENTIFIER) {
+        if (get_node(ctx, left)->type != NODE_IDENTIFIER) {
             report_error_at_token(ctx, parser_previous(parser), "Invalid assignment target.");
-            return NULL;
+            return NULL_NODE;
         }
 
         parser_consume(ctx, parser, EQUAL, "Expected '='");
-        ast_node_t *right = parser_parse_assignment(ctx, parser);
+        node_id right = parser_parse_assignment(ctx, parser);
 
-        if (!right) {
+        if (right == NULL_NODE) {
             report_error_at_token(ctx, parser_previous(parser), "Expected expression after '='");
-            return NULL;
+            return NULL_NODE;
         }
 
-        return parser_create_node(ctx->arena, NODE_ASSIGN,
+        usize start = get_node(ctx, left)->start;
+        return parser_create_node(ctx, NODE_ASSIGN,
                                   (node_value_t){ .assign.identifier = left,
                                                   .assign.expression = right },
-                                  left->start, right->end);
+                                  start, get_node(ctx, right)->end);
     }
 
     return left;
 }
 
-ast_node_t *parser_parse_ternary(context_t *ctx, parser_t *parser)
+node_id parser_parse_ternary(context_t *ctx, parser_t *parser)
 {
-    ast_node_t *condition = parser_parse_logical_or(ctx, parser);
+    node_id condition = parser_parse_logical_or(ctx, parser);
 
     if (!parser_match(parser, QUESTION_MARK))
         return condition;
 
     parser_advance(parser);
 
-    if (!condition) {
+    if (condition == NULL_NODE) {
         report_error_at_token(ctx, parser_previous(parser), "Expected condition before '?'");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *true_branch = parser_parse_expression(ctx, parser);
-    if (!true_branch) {
+    node_id true_branch = parser_parse_expression(ctx, parser);
+    if (true_branch == NULL_NODE) {
         report_unexpected_token(ctx, parser_previous(parser), "expression");
-        return NULL;
+        return NULL_NODE;
     }
 
     if (!parser_match(parser, COLON)) {
         report_error_at_token(ctx, parser_previous(parser),
                               "Expected false branch expression for ternary");
-        return NULL;
+        return NULL_NODE;
     }
 
     parser_advance(parser);
 
-    ast_node_t *false_branch = parser_parse_ternary(ctx, parser);
-    if (!false_branch) {
+    node_id false_branch = parser_parse_ternary(ctx, parser);
+    if (false_branch == NULL_NODE) {
         report_error_at_token(ctx, parser_previous(parser), "Expected expression after ':'");
-        return NULL;
+        return NULL_NODE;
     }
 
     node_value_t value = { .ternary = { .condition = condition,
                                         .true_branch = true_branch,
                                         .false_branch = false_branch } };
 
-    return parser_create_node(ctx->arena, NODE_TERNARY, value, condition->start, false_branch->end);
+    usize start = get_node(ctx, condition)->start;
+    return parser_create_node(ctx, NODE_TERNARY, value, start, get_node(ctx, false_branch)->end);
 }
 
-ast_node_t *parser_parse_logical_or(context_t *ctx, parser_t *parser)
+node_id parser_parse_logical_or(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_peek(parser);
-    ast_node_t *left = parser_parse_logical_and(ctx, parser);
+    node_id left = parser_parse_logical_and(ctx, parser);
 
     while (!parser_is_eof(parser) && parser_match(parser, OR)) {
-        if (!left) {
+        if (left == NULL_NODE) {
             report_error_at_token(ctx, tok, "Missing left-hand expression");
 
-            return NULL;
+            return NULL_NODE;
         }
 
         token_t op = parser_advance(parser);
 
-        ast_node_t *right = parser_parse_logical_and(ctx, parser);
+        node_id right = parser_parse_logical_and(ctx, parser);
 
-        if (!right) {
+        if (right == NULL_NODE) {
             report_error_at_token(ctx, parser_previous(parser), "Missing right-hand expression");
 
-            return NULL;
+            return NULL_NODE;
         }
 
         node_value_t value = { .binary = { .left = left, .op = op, .right = right } };
-        left = parser_create_node(ctx->arena, NODE_BINARY, value, left->start, right->end);
+        usize start = get_node(ctx, left)->start;
+        left = parser_create_node(ctx, NODE_BINARY, value, start, get_node(ctx, right)->end);
     }
 
     return left;
 }
 
-ast_node_t *parser_parse_logical_and(context_t *ctx, parser_t *parser)
+node_id parser_parse_logical_and(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_peek(parser);
-    ast_node_t *left = parser_parse_equality(ctx, parser);
+    node_id left = parser_parse_equality(ctx, parser);
 
     while (!parser_is_eof(parser) && parser_match(parser, AND)) {
-        if (!left) {
+        if (left == NULL_NODE) {
             report_error_at_token(ctx, tok, "Missing left-hand expression");
 
-            return NULL;
+            return NULL_NODE;
         }
 
         token_t op = parser_advance(parser);
 
-        ast_node_t *right = parser_parse_equality(ctx, parser);
+        node_id right = parser_parse_equality(ctx, parser);
 
-        if (!right) {
+        if (right == NULL_NODE) {
             report_error_at_token(ctx, parser_previous(parser), "Missing right-hand expression");
 
-            return NULL;
+            return NULL_NODE;
         }
 
         node_value_t value = { .binary = { .left = left, .op = op, .right = right } };
-        left = parser_create_node(ctx->arena, NODE_BINARY, value, left->start, right->end);
+        usize start = get_node(ctx, left)->start;
+        left = parser_create_node(ctx, NODE_BINARY, value, start, get_node(ctx, right)->end);
     }
 
     return left;
 }
 
-ast_node_t *parser_parse_equality(context_t *ctx, parser_t *parser)
+node_id parser_parse_equality(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_peek(parser);
-    ast_node_t *left = parser_parse_comparison(ctx, parser);
+    node_id left = parser_parse_comparison(ctx, parser);
 
     while (!parser_is_eof(parser) && parser_match(parser, EQUAL_EQUAL, BANG_EQUAL)) {
-        if (!left) {
+        if (left == NULL_NODE) {
             report_error_at_token(ctx, tok, "Equality operators must have a left-hand operand");
 
-            return NULL;
+            return NULL_NODE;
         }
 
         token_t op = parser_advance(parser);
 
-        ast_node_t *right = parser_parse_comparison(ctx, parser);
+        node_id right = parser_parse_comparison(ctx, parser);
 
-        if (!right) {
+        if (right == NULL_NODE) {
             report_error_at_token(ctx, parser_previous(parser),
                                   "Equality operators must have a right-hand operand");
 
-            return NULL;
+            return NULL_NODE;
         }
 
         node_value_t value = { .binary = { .left = left, .op = op, .right = right } };
-        left = parser_create_node(ctx->arena, NODE_BINARY, value, left->start, right->end);
+        usize start = get_node(ctx, left)->start;
+        left = parser_create_node(ctx, NODE_BINARY, value, start, get_node(ctx, right)->end);
     }
 
     return left;
 }
 
-ast_node_t *parser_parse_comparison(context_t *ctx, parser_t *parser)
+node_id parser_parse_comparison(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_peek(parser);
-    ast_node_t *left = parser_parse_term(ctx, parser);
+    node_id left = parser_parse_term(ctx, parser);
 
     while (!parser_is_eof(parser) &&
            parser_match(parser, LESS, LESS_EQUAL, GREATER, GREATER_EQUAL)) {
-        if (!left) {
+        if (left == NULL_NODE) {
             report_error_at_token(ctx, tok, "Comparison operators must have a left-hand operand");
 
-            return NULL;
+            return NULL_NODE;
         }
 
         token_t op = parser_advance(parser);
 
-        ast_node_t *right = parser_parse_term(ctx, parser);
+        node_id right = parser_parse_term(ctx, parser);
 
-        if (!right) {
+        if (right == NULL_NODE) {
             report_error_at_token(ctx, parser_previous(parser),
                                   "Comparison operators must have a right-hand operand");
 
-            return NULL;
+            return NULL_NODE;
         }
 
         node_value_t value = { .binary = { .left = left, .op = op, .right = right } };
-        left = parser_create_node(ctx->arena, NODE_BINARY, value, left->start, right->end);
+        usize start = get_node(ctx, left)->start;
+        left = parser_create_node(ctx, NODE_BINARY, value, start, get_node(ctx, right)->end);
     }
 
     return left;
 }
-ast_node_t *parser_parse_term(context_t *ctx, parser_t *parser)
+
+node_id parser_parse_term(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_peek(parser);
-    ast_node_t *left = parser_parse_factor(ctx, parser);
+    node_id left = parser_parse_factor(ctx, parser);
 
     while (!parser_is_eof(parser) && parser_match(parser, PLUS, MINUS)) {
-        if (!left) {
+        if (left == NULL_NODE) {
             report_error_at_token(ctx, tok,
                                   "Addition/subtraction operators must have a left-hand operand");
 
-            return NULL;
+            return NULL_NODE;
         }
         token_t op = parser_advance(parser);
 
-        ast_node_t *right = parser_parse_factor(ctx, parser);
+        node_id right = parser_parse_factor(ctx, parser);
 
-        if (!right) {
+        if (right == NULL_NODE) {
             report_error_at_token(ctx, parser_previous(parser),
                                   "Addition/subtraction operators must have a right-hand operand");
 
-            return NULL;
+            return NULL_NODE;
         }
 
         node_value_t value = { .binary = { .left = left, .op = op, .right = right } };
-        left = parser_create_node(ctx->arena, NODE_BINARY, value, left->start, right->end);
+        usize start = get_node(ctx, left)->start;
+        left = parser_create_node(ctx, NODE_BINARY, value, start, get_node(ctx, right)->end);
     }
 
     return left;
 }
-ast_node_t *parser_parse_factor(context_t *ctx, parser_t *parser)
+
+node_id parser_parse_factor(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_peek(parser);
-    ast_node_t *left = parser_parse_unary(ctx, parser);
+    node_id left = parser_parse_unary(ctx, parser);
 
     while (!parser_is_eof(parser) && parser_match(parser, STAR, SLASH)) {
-        if (!left) {
+        if (left == NULL_NODE) {
             report_error_at_token(
                 ctx, tok, "Multiplication/division operators must have a left-hand operand");
 
-            return NULL;
+            return NULL_NODE;
         }
         token_t op = parser_advance(parser);
 
-        ast_node_t *right = parser_parse_unary(ctx, parser);
+        node_id right = parser_parse_unary(ctx, parser);
 
-        if (!right) {
+        if (right == NULL_NODE) {
             report_error_at_token(
                 ctx, parser_previous(parser),
                 "Multiplication/division operators must have a right-hand operand");
 
-            return NULL;
+            return NULL_NODE;
         }
 
         node_value_t value = { .binary = { .left = left, .op = op, .right = right } };
-        left = parser_create_node(ctx->arena, NODE_BINARY, value, left->start, right->end);
+        usize start = get_node(ctx, left)->start;
+        left = parser_create_node(ctx, NODE_BINARY, value, start, get_node(ctx, right)->end);
     }
 
     return left;
 }
 
-ast_node_t *parser_parse_unary(context_t *ctx, parser_t *parser)
+node_id parser_parse_unary(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_peek(parser);
 
@@ -1234,30 +1296,30 @@ ast_node_t *parser_parse_unary(context_t *ctx, parser_t *parser)
     case PLUS:
     case MINUS: {
         parser_advance(parser);
-        ast_node_t *node = parser_parse_call(ctx, parser);
-        if (!node) {
+        node_id operand = parser_parse_call(ctx, parser);
+        if (operand == NULL_NODE) {
             report_error_at_token(ctx, tok, "Unary operator must have an operand");
-            return NULL;
+            return NULL_NODE;
         }
 
-        node_value_t value = { .unary = { .op = tok, .child = node } };
-        return parser_create_node(ctx->arena, NODE_UNARY, value, node->start, node->end);
+        node_value_t value = { .unary = { .op = tok, .child = operand } };
+        return parser_create_node(ctx, NODE_UNARY, value, tok.cursor, get_node(ctx, operand)->end);
     };
 
     case BANG: {
         parser_advance(parser);
 
         bool is_bang = parser_match(parser, BANG);
-        ast_node_t *node = is_bang ? parser_parse_unary(ctx, parser) :
-                                     parser_parse_call(ctx, parser);
+        node_id operand = is_bang ? parser_parse_unary(ctx, parser) :
+                                    parser_parse_call(ctx, parser);
 
-        if (!node) {
+        if (operand == NULL_NODE) {
             report_error_at_token(ctx, tok, "Unary operator must have an operand");
-            return NULL;
+            return NULL_NODE;
         }
 
-        node_value_t value = { .unary = { .op = tok, .child = node } };
-        return parser_create_node(ctx->arena, NODE_UNARY, value, node->start, node->end);
+        node_value_t value = { .unary = { .op = tok, .child = operand } };
+        return parser_create_node(ctx, NODE_UNARY, value, tok.cursor, get_node(ctx, operand)->end);
     }
 
     default:
@@ -1267,19 +1329,18 @@ ast_node_t *parser_parse_unary(context_t *ctx, parser_t *parser)
     return parser_parse_call(ctx, parser);
 }
 
-ast_node_t *parser_parse_call(context_t *ctx, parser_t *parser)
+node_id parser_parse_call(context_t *ctx, parser_t *parser)
 {
     token_t callee_tok = parser_peek(parser);
-    ast_node_t *left = parser_parse_primary(ctx, parser);
+    node_id left = parser_parse_primary(ctx, parser);
 
     while (parser_match(parser, LEFT_PAREN)) {
         parser_advance(parser);
 
         ast_nodes_t *args = parser_parse_args(ctx, parser);
 
-        token_t tok = parser_advance(parser);
-        if (tok.type != RIGHT_PAREN)
-            report_error_at_token(ctx, tok, "Expected ')' after arguments.");
+        parser_consume(ctx, parser, RIGHT_PAREN, "Expected ')' after arguments.");
+        token_t tok = parser_previous(parser);
 
         if (args && args->size > 255)
             report_error_at_token(ctx, callee_tok, "Can't have more than 255 arguments.");
@@ -1297,21 +1358,22 @@ ast_node_t *parser_parse_call(context_t *ctx, parser_t *parser)
                                    .loc = loc,
                                } };
 
-        left = parser_create_node(ctx->arena, NODE_CALL, value, left->start, tok.cursor);
+        usize start = get_node(ctx, left)->start;
+        left = parser_create_node(ctx, NODE_CALL, value, start, tok.cursor);
     }
 
     return left;
 }
 
-ast_node_t *parser_parse_primary(context_t *ctx, parser_t *parser)
+node_id parser_parse_primary(context_t *ctx, parser_t *parser)
 {
     if (parser_match(parser, TRUE, FALSE))
         return parser_parse_boolean(ctx, parser);
 
     if (parser_match(parser, NIL)) {
-        parser_advance(parser);
+        token_t tok = parser_advance(parser);
 
-        return parser_create_node(ctx->arena, NODE_NIL, (node_value_t){}, 0, 0);
+        return parser_create_node(ctx, NODE_NIL, (node_value_t){}, tok.cursor, tok.cursor + 2);
     }
 
     if (parser_match(parser, IDENTIFIER))
@@ -1319,19 +1381,19 @@ ast_node_t *parser_parse_primary(context_t *ctx, parser_t *parser)
 
     if (parser_match(parser, LEFT_PAREN)) {
         parser_advance(parser);
-        ast_node_t *node = parser_parse_expression(ctx, parser);
+        node_id node = parser_parse_expression(ctx, parser);
 
-        if (!node) {
+        if (node == NULL_NODE) {
             report_error_at_token(ctx, parser_previous(parser),
                                   "Expected expression inside parentheses");
 
-            return NULL;
+            return NULL_NODE;
         }
 
         if (parser_advance(parser).type != RIGHT_PAREN) {
             report_unexpected_token(ctx, parser_previous(parser), ")");
 
-            return NULL;
+            return NULL_NODE;
         }
 
         return node;
@@ -1343,7 +1405,7 @@ ast_node_t *parser_parse_primary(context_t *ctx, parser_t *parser)
     if (parser_match(parser, DOT)) {
         report_unexpected_token(ctx, parser_peek(parser), "number");
 
-        return NULL;
+        return NULL_NODE;
     }
 
     if (parser_match(parser, NUMBER))
@@ -1351,19 +1413,19 @@ ast_node_t *parser_parse_primary(context_t *ctx, parser_t *parser)
 
     if (parser_match(parser, FUN)) {
         parser->function_depth += 1;
-        ast_node_t *node = parser_parse_fun_expr(ctx, parser);
+        node_id node = parser_parse_fun_expr(ctx, parser);
         parser->function_depth -= 1;
 
         return node;
     }
 
-    return NULL;
+    return NULL_NODE;
 }
 
 ast_nodes_t *parser_parse_args(context_t *ctx, parser_t *parser)
 {
-    ast_node_t *node = parser_parse_assignment(ctx, parser);
-    if (!node)
+    node_id node = parser_parse_assignment(ctx, parser);
+    if (node == NULL_NODE)
         return NULL;
 
     ast_nodes_t *args = arena_alloc(ctx->arena, sizeof(*args));
@@ -1373,8 +1435,8 @@ ast_nodes_t *parser_parse_args(context_t *ctx, parser_t *parser)
     while (!parser_is_eof(parser) && parser_match(parser, COMMA)) {
         parser_advance(parser);
 
-        ast_node_t *arg = parser_parse_assignment(ctx, parser);
-        if (!arg)
+        node_id arg = parser_parse_assignment(ctx, parser);
+        if (arg == NULL_NODE)
             return NULL;
 
         arena_da_append(ctx->arena, args, arg);
@@ -1385,8 +1447,8 @@ ast_nodes_t *parser_parse_args(context_t *ctx, parser_t *parser)
 
 ast_nodes_t *parser_parse_params(context_t *ctx, parser_t *parser)
 {
-    ast_node_t *node = parser_parse_identifier(ctx, parser);
-    if (!node)
+    node_id node = parser_parse_identifier(ctx, parser);
+    if (node == NULL_NODE)
         return NULL;
 
     ast_nodes_t *params = arena_alloc(ctx->arena, sizeof(*params));
@@ -1396,10 +1458,8 @@ ast_nodes_t *parser_parse_params(context_t *ctx, parser_t *parser)
     while (!parser_is_eof(parser) && parser_match(parser, COMMA)) {
         parser_advance(parser);
 
-        // TODO(fcasibu): not really stated in the chapter
-        // but do we want to handle param name collision?
-        ast_node_t *param = parser_parse_identifier(ctx, parser);
-        if (!param)
+        node_id param = parser_parse_identifier(ctx, parser);
+        if (param == NULL_NODE)
             return NULL;
 
         arena_da_append(ctx->arena, params, param);
@@ -1408,17 +1468,17 @@ ast_nodes_t *parser_parse_params(context_t *ctx, parser_t *parser)
     return params;
 }
 
-ast_node_t *parser_parse_fun_expr(context_t *ctx, parser_t *parser)
+node_id parser_parse_fun_expr(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_advance(parser);
     if (tok.type != FUN) {
         report_unexpected_token(ctx, parser_previous(parser), "fun");
-        return NULL;
+        return NULL_NODE;
     }
 
     if (parser_advance(parser).type != LEFT_PAREN) {
         report_unexpected_token(ctx, parser_previous(parser), "(");
-        return NULL;
+        return NULL_NODE;
     }
 
     ast_nodes_t *params = NULL;
@@ -1429,26 +1489,26 @@ ast_node_t *parser_parse_fun_expr(context_t *ctx, parser_t *parser)
 
     if (parser_advance(parser).type != RIGHT_PAREN) {
         report_error_at_token(ctx, parser_previous(parser), "Expected ')' after parameters.");
-        return NULL;
+        return NULL_NODE;
     }
 
-    ast_node_t *body = parser_parse_block(ctx, parser);
+    node_id body = parser_parse_block(ctx, parser);
 
-    if (!body) {
+    if (body == NULL_NODE) {
         report_error_at_token(ctx, tok, "Expected function body");
-        return NULL;
+        return NULL_NODE;
     }
 
-    node_value_t value = { .fun_decl = { .name = NULL, .params = params, .body = body } };
-    return parser_create_node(ctx->arena, NODE_FUN, value, tok.cursor, body->end);
+    node_value_t value = { .fun_decl = { .name = NULL_NODE, .params = params, .body = body } };
+    return parser_create_node(ctx, NODE_FUN, value, tok.cursor, get_node(ctx, body)->end);
 }
 
-ast_node_t *parser_parse_number(context_t *ctx, parser_t *parser)
+node_id parser_parse_number(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_advance(parser);
     if (tok.type != NUMBER) {
         report_unexpected_token(ctx, parser_previous(parser), "number");
-        return NULL;
+        return NULL_NODE;
     }
 
     char tmp[tok.lexeme_len + 1];
@@ -1463,20 +1523,20 @@ ast_node_t *parser_parse_number(context_t *ctx, parser_t *parser)
         report(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source, tok.line_start,
                "Numeric conversion failed: value out of range or extra characters after number.");
 
-        return NULL;
+        return NULL_NODE;
     }
 
     node_value_t node_value = { .number_literal = value };
-    return parser_create_node(ctx->arena, NODE_NUMBER, node_value, tok.cursor,
+    return parser_create_node(ctx, NODE_NUMBER, node_value, tok.cursor,
                               tok.cursor + tok.lexeme_len);
 }
 
-ast_node_t *parser_parse_string(context_t *ctx, parser_t *parser)
+node_id parser_parse_string(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_advance(parser);
     if (tok.type != STRING) {
         report_unexpected_token(ctx, parser_previous(parser), "string");
-        return NULL;
+        return NULL_NODE;
     }
 
     char tmp[tok.lexeme_len - 1];
@@ -1486,18 +1546,18 @@ ast_node_t *parser_parse_string(context_t *ctx, parser_t *parser)
 
     const char *value = intern(ctx->arena, tmp);
     if (!value)
-        return NULL;
+        return NULL_NODE;
 
     node_value_t node_value = { .string_literal = value };
-    return parser_create_node(ctx->arena, NODE_STRING, node_value, tok.cursor, tok.lexeme_len);
+    return parser_create_node(ctx, NODE_STRING, node_value, tok.cursor, tok.lexeme_len);
 }
 
-ast_node_t *parser_parse_boolean(context_t *ctx, parser_t *parser)
+node_id parser_parse_boolean(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_advance(parser);
     if (tok.type != TRUE && tok.type != FALSE) {
         report_unexpected_token(ctx, parser_previous(parser), "boolean");
-        return NULL;
+        return NULL_NODE;
     }
 
     char tmp[tok.lexeme_len + 1];
@@ -1505,14 +1565,15 @@ ast_node_t *parser_parse_boolean(context_t *ctx, parser_t *parser)
     tmp[tok.lexeme_len] = '\0';
 
     node_value_t node_value = { .boolean_literal = strcmp(tmp, "true") == 0 };
-    return parser_create_node(ctx->arena, NODE_BOOL, node_value, tok.cursor, tok.lexeme_len);
+    return parser_create_node(ctx, NODE_BOOL, node_value, tok.cursor, tok.lexeme_len);
 }
-ast_node_t *parser_parse_identifier(context_t *ctx, parser_t *parser)
+
+node_id parser_parse_identifier(context_t *ctx, parser_t *parser)
 {
     token_t tok = parser_advance(parser);
     if (tok.type != IDENTIFIER) {
         report_unexpected_token(ctx, parser_previous(parser), "identifier");
-        return NULL;
+        return NULL_NODE;
     }
 
     char tmp[tok.lexeme_len + 1];
@@ -1521,7 +1582,7 @@ ast_node_t *parser_parse_identifier(context_t *ctx, parser_t *parser)
 
     const char *value = intern(ctx->arena, tmp);
     if (!value)
-        return NULL;
+        return NULL_NODE;
 
     node_value_t node_value = { 
         .identifier = { 
@@ -1534,7 +1595,80 @@ ast_node_t *parser_parse_identifier(context_t *ctx, parser_t *parser)
             },
         }
     };
-    return parser_create_node(ctx->arena, NODE_IDENTIFIER, node_value, tok.cursor, tok.lexeme_len);
+    return parser_create_node(ctx, NODE_IDENTIFIER, node_value, tok.cursor, tok.lexeme_len);
+}
+
+token_t parser_previous(parser_t *parser)
+{
+    assert(parser->current_index > 0);
+
+    return parser->tokens[parser->current_index - 1];
+}
+
+token_t parser_peek(parser_t *parser)
+{
+    if (parser->current_index >= parser->tokens_size)
+        return parser->tokens[parser->tokens_size - 1];
+
+    return parser->tokens[parser->current_index];
+}
+
+token_t parser_advance(parser_t *parser)
+{
+    if (parser->current_index >= parser->tokens_size)
+        return parser->tokens[parser->tokens_size - 1];
+
+    return parser->tokens[parser->current_index++];
+}
+
+bool parser_match_any(parser_t *parser, const token_type_t *types, usize count)
+{
+    token_t tok = parser_peek(parser);
+
+    for (usize i = 0; i < count; ++i) {
+        if (tok.type == types[i])
+            return true;
+    }
+
+    return false;
+}
+
+void parser_consume(context_t *ctx, parser_t *parser, token_type_t type, const char *message)
+{
+    token_t tok = parser_peek(parser);
+    if (tok.type == type) {
+        parser_advance(parser);
+        return;
+    }
+
+    report_error_at_token(ctx, tok, message);
+}
+
+void parser_synchronize(parser_t *parser)
+{
+    parser_advance(parser);
+
+    while (!parser_is_eof(parser)) {
+        if (parser_previous(parser).type == SEMICOLON)
+            return;
+
+        switch (parser_peek(parser).type) {
+        case CLASS:
+        case FUN:
+        case VAR:
+        case FOR:
+        case IF:
+        case WHILE:
+        case BREAK:
+        case PRINT:
+        case RETURN:
+            return;
+        default:
+            break;
+        }
+
+        parser_advance(parser);
+    }
 }
 
 void lexer_tokenize(context_t *ctx, lexer_t *lexer)
@@ -1909,108 +2043,23 @@ bool lexer_is_alphanum(char ch)
     return isalnum(ch) || ch == '_';
 }
 
-ast_node_t *parser_create_node(arena_t *arena, node_type_t type, node_value_t value, usize start,
-                               usize end)
+void resolve_variable(context_t *ctx, scopes_t *scopes, node_id id)
 {
-    ast_node_t *node = arena_alloc(arena, sizeof(*node));
-
-    node->value = value;
-    node->start = start;
-    node->end = end;
-    node->type = type;
-
-    return node;
-}
-
-token_t parser_previous(parser_t *parser)
-{
-    assert(parser->current_index > 0);
-
-    return parser->tokens[parser->current_index - 1];
-}
-
-token_t parser_peek(parser_t *parser)
-{
-    if (parser->current_index >= parser->tokens_size)
-        return parser->tokens[parser->tokens_size - 1];
-
-    return parser->tokens[parser->current_index];
-}
-
-token_t parser_advance(parser_t *parser)
-{
-    if (parser->current_index >= parser->tokens_size)
-        return parser->tokens[parser->tokens_size - 1];
-
-    return parser->tokens[parser->current_index++];
-}
-
-bool parser_match_any(parser_t *parser, const token_type_t *types, usize count)
-{
-    token_t tok = parser_peek(parser);
-
-    for (usize i = 0; i < count; ++i) {
-        if (tok.type == types[i])
-            return true;
-    }
-
-    return false;
-}
-
-void parser_consume(context_t *ctx, parser_t *parser, token_type_t type, const char *message)
-{
-    token_t tok = parser_peek(parser);
-    if (tok.type == type) {
-        parser_advance(parser);
-        return;
-    }
-
-    report_error_at_token(ctx, tok, message);
-}
-
-void parser_synchronize(parser_t *parser)
-{
-    parser_advance(parser);
-
-    while (!parser_is_eof(parser)) {
-        if (parser_previous(parser).type == SEMICOLON)
-            return;
-
-        switch (parser_peek(parser).type) {
-        case CLASS:
-        case FUN:
-        case VAR:
-        case FOR:
-        case IF:
-        case WHILE:
-        case BREAK:
-        case PRINT:
-        case RETURN:
-            return;
-        default:
-            break;
-        }
-
-        parser_advance(parser);
-    }
-}
-
-void resolve_variable(context_t *ctx, scopes_t *scopes, ast_node_t *node)
-{
+    ast_node_t *node = get_node(ctx, id);
     if (!node)
         return;
 
     switch (node->type) {
     case NODE_VAR: {
         assert(node->value.var_decl.identifier);
-        const char *name = node->value.var_decl.identifier->value.identifier.name;
+        const char *name = get_node(ctx, node->value.var_decl.identifier)->value.identifier.name;
         set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], name, (value_t){});
         resolve_variable(ctx, scopes, node->value.var_decl.identifier);
     } break;
 
     case NODE_FUN: {
         if (node->value.fun_decl.name) {
-            const char *name = node->value.fun_decl.name->value.identifier.name;
+            const char *name = get_node(ctx, node->value.fun_decl.name)->value.identifier.name;
             set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], name, (value_t){});
             resolve_variable(ctx, scopes, node->value.fun_decl.name);
         }
@@ -2019,7 +2068,7 @@ void resolve_variable(context_t *ctx, scopes_t *scopes, ast_node_t *node)
         ast_nodes_t *params = node->value.fun_decl.params;
         if (params && params->size) {
             for (usize i = 0; i < params->size; ++i) {
-                const char *param = params->items[i]->value.identifier.name;
+                const char *param = get_node(ctx, params->items[i])->value.identifier.name;
                 assert(param);
                 set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], param, (value_t){});
                 resolve_variable(ctx, scopes, params->items[i]);
@@ -2027,10 +2076,11 @@ void resolve_variable(context_t *ctx, scopes_t *scopes, ast_node_t *node)
         }
 
         assert(node->value.fun_decl.body);
-        ast_nodes_t *declarations = node->value.fun_decl.body->value.block_declarations;
-        for (usize i = 0; i < declarations->size; ++i) {
+        ast_nodes_t *declarations =
+            get_node(ctx, node->value.fun_decl.body)->value.block_declarations;
+        for (usize i = 0; i < declarations->size; ++i)
             resolve_variable(ctx, scopes, declarations->items[i]);
-        }
+
         scopes->size -= 1;
     } break;
 
@@ -2370,9 +2420,10 @@ bool interpret_comparison(token_type_t op, value_t a, value_t b)
     }
 }
 
-eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *global_env,
+eval_result_t interpret_binary(context_t *ctx, node_id id, environment_t *global_env,
                                environment_t *env)
 {
+    ast_node_t *node = get_node(ctx, id);
     assert(node->type == NODE_BINARY);
 
     switch (node->value.binary.op.type) {
@@ -2501,9 +2552,11 @@ eval_result_t interpret_binary(context_t *ctx, ast_node_t *node, environment_t *
     }
 }
 
-eval_result_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *global_env,
+eval_result_t interpret_unary(context_t *ctx, node_id id, environment_t *global_env,
                               environment_t *env)
 {
+    ast_node_t *node = get_node(ctx, id);
+
     switch (node->value.unary.op.type) {
     case BANG: {
         return create_eval_result(
@@ -2538,9 +2591,11 @@ eval_result_t interpret_unary(context_t *ctx, ast_node_t *node, environment_t *g
     }
 }
 
-eval_result_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t *global_env,
+eval_result_t interpret_ternary(context_t *ctx, node_id id, environment_t *global_env,
                                 environment_t *env)
 {
+    ast_node_t *node = get_node(ctx, id);
+
     bool condition =
         is_truthy(interpret(ctx, node->value.ternary.condition, global_env, env).value);
     if (condition)
@@ -2549,9 +2604,9 @@ eval_result_t interpret_ternary(context_t *ctx, ast_node_t *node, environment_t 
     return interpret(ctx, node->value.ternary.false_branch, global_env, env);
 }
 
-eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *global_env,
-                        environment_t *env)
+eval_result_t interpret(context_t *ctx, node_id id, environment_t *global_env, environment_t *env)
 {
+    ast_node_t *node = get_node(ctx, id);
     assert(node);
 
     switch (node->type) {
@@ -2584,7 +2639,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *global_
                                                   } });
 
         if (node->value.fun_decl.name) {
-            const char *name = node->value.fun_decl.name->value.identifier.name;
+            const char *name = get_node(ctx, node->value.fun_decl.name)->value.identifier.name;
             data.as.fun_def.name = name;
 
             if (set_var_entry(ctx->arena, &env->pool, name, data) != 0)
@@ -2617,13 +2672,13 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *global_
     }
 
     case NODE_BINARY:
-        return interpret_binary(ctx, node, global_env, env);
+        return interpret_binary(ctx, id, global_env, env);
 
     case NODE_UNARY:
-        return interpret_unary(ctx, node, global_env, env);
+        return interpret_unary(ctx, id, global_env, env);
 
     case NODE_TERNARY:
-        return interpret_ternary(ctx, node, global_env, env);
+        return interpret_ternary(ctx, id, global_env, env);
 
     case NODE_PRINT: {
         printf("%s\n",
@@ -2634,10 +2689,11 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *global_
     }
 
     case NODE_VAR: {
-        const char *identifier = node->value.var_decl.identifier->value.identifier.name;
+        const char *identifier =
+            get_node(ctx, node->value.var_decl.identifier)->value.identifier.name;
         value_t uninitialized_value = create_uninitialized_value();
 
-        if (node->value.var_decl.expression->type == NODE_UNINITIALIZED) {
+        if (get_node(ctx, node->value.var_decl.expression)->type == NODE_UNINITIALIZED) {
             if (set_var_entry(ctx->arena, &env->pool, identifier, uninitialized_value) != 0)
                 return create_eval_error();
 
@@ -2652,10 +2708,10 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *global_
         return create_eval_ok();
     }
     case NODE_ASSIGN: {
-        const char *var_name = node->value.assign.identifier->value.identifier.name;
-        source_loc_t loc = node->value.assign.identifier->value.identifier.loc;
+        ast_node_t *ident_node = get_node(ctx, node->value.assign.identifier);
+        source_loc_t loc = ident_node->value.identifier.loc;
         var_pool_entry_t *var_entry = get_var_in_scope(
-            global_env, env, node->value.assign.identifier->value.identifier.depth, var_name);
+            global_env, env, ident_node->value.identifier.depth, ident_node->value.identifier.name);
 
         if (!var_entry) {
             report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
@@ -2663,14 +2719,14 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *global_
             return create_eval_error();
         }
 
-        eval_result_t value = interpret(ctx, node->value.assign.expression, global_env, env);
-        int depth = node->value.assign.identifier->value.identifier.depth;
-        if (set_var_in_scope(ctx->arena, global_env, env, depth, var_name, value.value) != 0)
+        eval_result_t result = interpret(ctx, node->value.assign.expression, global_env, env);
+        if (set_var_in_scope(ctx->arena, global_env, env, ident_node->value.identifier.depth,
+                             ident_node->value.identifier.name, result.value) != 0)
             return create_eval_error();
 
-        assert(value.type == EVAL_OK);
+        assert(result.type == EVAL_OK);
 
-        return value;
+        return result;
     }
 
     case NODE_BLOCK: {
@@ -2718,7 +2774,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *global_
 
     case NODE_FOR: {
         assert(node->value.for_stmt.body);
-        ast_node_t *condition = node->value.for_stmt.condition;
+        node_id condition = node->value.for_stmt.condition;
 
         environment_t *local_env = create_env(ctx->arena, env);
 
@@ -2747,7 +2803,7 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *global_
     }
 
     case NODE_RETURN: {
-        ast_node_t *value = node->value.return_value;
+        node_id value = node->value.return_value;
         return create_eval_result(EVAL_RETURN, value ?
                                                    interpret(ctx, value, global_env, env).value :
                                                    create_value(VALUE_NIL, (value_as_t){}));
@@ -2787,16 +2843,16 @@ eval_result_t interpret(context_t *ctx, ast_node_t *node, environment_t *global_
                 eval_result_t result = interpret(ctx, args->items[i], global_env, env);
 
                 if (set_var_entry(ctx->arena, &local_env->pool,
-                                  params->items[i]->value.identifier.name, result.value) != 0)
+                                  get_node(ctx, params->items[i])->value.identifier.name,
+                                  result.value) != 0)
                     return create_eval_error();
             }
         }
 
-        ast_node_t *body = callee_result.value.as.fun_def.body;
-        assert(body);
+        node_id body = callee_result.value.as.fun_def.body;
 
-        eval_result_t result =
-            run_declarations(ctx, body->value.block_declarations, global_env, local_env);
+        eval_result_t result = run_declarations(ctx, get_node(ctx, body)->value.block_declarations,
+                                                global_env, local_env);
 
         if (result.type == EVAL_OK)
             return create_eval_result(EVAL_OK, create_value(VALUE_NIL, (value_as_t){}));
