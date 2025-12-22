@@ -1,0 +1,18 @@
+// class 
+
+class hello {
+    print_name(name) { print "Hello " + name; }
+}
+
+// class instance
+var hello_instance = hello();
+
+// get property
+hello_instance.print_name("nevz"); // Hello nevz
+
+// set property
+hello_instance.print_name = fun(name) {
+    print "hello " +  name;
+};
+
+hello_instance.print_name("nevz"); // hello nevz
