@@ -7,7 +7,7 @@
 #include "logger.h"
 #include "type_defs.h"
 
-#define ARENA_SIZE 1024 * 1024 * 1024
+#define ARENA_SIZE (64 * 1024 * 1024)
 #define LANG_NAME "lox"
 #define LANG_NAME_LEN 3
 
@@ -510,7 +510,7 @@ void run(context_t *ctx)
         return;
 
     scopes_t scopes = { 0 };
-    arena_da_init(ctx->arena, &scopes, 16);
+    arena_da_init(ctx->arena, &scopes, 256);
 
     resolve_variables(ctx, &scopes, get_node(ctx, parser.root_id)->value.prog_declarations);
 

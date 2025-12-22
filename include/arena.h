@@ -24,6 +24,7 @@ void arena_destroy(arena_t *arena);
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/mman.h>
 
 #define ARENA_DA_CAPACITY 256
 
@@ -70,9 +71,12 @@ bool arena_create(arena_t *arena, usize capacity)
     if (!arena || capacity == 0)
         return false;
 
-    arena->base = malloc(capacity);
-    if (!arena->base)
+    arena->base = mmap(NULL, capacity, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+
+    if (arena->base == MAP_FAILED) {
+        arena->base = NULL;
         return false;
+    }
 
     arena->capacity = capacity;
     arena->offset = 0;
@@ -106,14 +110,16 @@ void *arena_alloc_aligned(arena_t *arena, usize size, usize alignment)
             return ptr;
         }
 
-        arena_t *next = malloc(sizeof(*next));
-        if (!next)
+        arena_t *next =
+            mmap(NULL, sizeof(*next), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+
+        if (next == MAP_FAILED)
             return NULL;
 
         usize need = size + (alignment - 1);
         usize new_cap = need > end->capacity * 2 ? need : end->capacity * 2;
         if (!arena_create(next, new_cap)) {
-            free(next);
+            munmap(next, sizeof(*next));
             return NULL;
         }
 
@@ -150,16 +156,25 @@ void arena_destroy(arena_t *arena)
     if (!arena)
         return;
 
-    free(arena->base);
-    arena->base = NULL;
+    if (arena->base) {
+        munmap(arena->base, arena->capacity);
+        arena->base = NULL;
+    }
+
+    arena_t *current = arena->next;
+    while (current) {
+        arena_t *next_node = current->next;
+
+        if (current->base)
+            munmap(current->base, current->capacity);
+
+        munmap(current, sizeof(*current));
+        current = next_node;
+    }
+
+    arena->next = NULL;
     arena->capacity = 0;
     arena->offset = 0;
-
-    if (arena->next) {
-        arena_destroy(arena->next);
-        free(arena->next);
-        arena->next = NULL;
-    }
 }
 
 #endif // ARENA_IMPLEMENTATION
