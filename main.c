@@ -2239,11 +2239,23 @@ void resolve_variable(context_t *ctx, scopes_t *scopes, node_id id)
             ast_node_t *ident = get_node(ctx, fun->value.fun_decl.name);
             ident->value.identifier.depth = 0;
 
+            arena_da_append(ctx->arena, scopes, (var_pool_t){ .head = NULL });
+            ast_nodes_t *params = fun->value.fun_decl.params;
+            if (params && params->size) {
+                for (usize i = 0; i < params->size; ++i) {
+                    const char *param = get_node(ctx, params->items[i])->value.identifier.name;
+                    assert(param);
+                    set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], param, (value_t){});
+                }
+            }
+
             ast_nodes_t *declarations =
                 get_node(ctx, fun->value.fun_decl.body)->value.block_declarations;
 
             for (usize i = 0; i < declarations->size; ++i)
                 resolve_variable(ctx, scopes, declarations->items[i]);
+
+            scopes->size -= 1;
         }
     } break;
 
@@ -2847,8 +2859,6 @@ eval_result_t interpret_class_instantiation(context_t *ctx, eval_result_t callee
                                             ast_node_t *node, environment_t *global_env,
                                             environment_t *env)
 {
-    (void)global_env;
-    (void)env;
     source_loc_t loc = node->value.call.loc;
 
     if (callee_result.value.type != VALUE_CLASS) {

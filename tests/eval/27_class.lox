@@ -16,3 +16,33 @@ hello_instance.print_name = fun(name) {
 };
 
 hello_instance.print_name("nevz"); // hello nevz
+
+class math {
+    add(x) {
+        return fun(y) {
+            return x + y;
+        }
+    }
+
+    sub(x) {
+        return fun(y) {
+            return x - y;
+        }
+    }
+
+    mul(x) {
+        return fun(y) {
+            return x * y;
+        }
+    }
+    
+    div(x) {
+        return fun(y) {
+            return x / y;
+        }
+    }
+}
+
+var inst = math();
+
+print inst.add(inst.div(inst.mul(35)(2))(2))(34);
