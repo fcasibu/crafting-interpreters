@@ -43,7 +43,8 @@ typedef enum {
     NODE_NUMBER, NODE_STRING, NODE_BOOL, NODE_NIL, NODE_UNARY, NODE_BINARY,
     NODE_PROGRAM, NODE_IDENTIFIER, NODE_TERNARY, NODE_PRINT, NODE_VAR,
     NODE_ASSIGN, NODE_BLOCK, NODE_IF, NODE_WHILE, NODE_FOR, NODE_BREAK,
-    NODE_FUN, NODE_CALL, NODE_RETURN, NODE_CLASS, NODE_GET, NODE_SET, NODE_UNINITIALIZED
+    NODE_FUN, NODE_CALL, NODE_RETURN, NODE_CLASS, NODE_GET, NODE_SET,
+    NODE_THIS, NODE_UNINITIALIZED
     // clang-format on
 } node_type_t;
 
@@ -75,6 +76,8 @@ typedef union {
         struct value *klass;
         const char *name;
         struct environment *env;
+        struct var_pool *fields;
+        struct var_pool *methods;
     } class_instance;
 } value_as_t;
 
@@ -212,6 +215,8 @@ typedef union {
         node_id expression;
     } set;
 
+    node_id this_context;
+
     struct ast_nodes *prog_declarations;
 } node_value_t;
 
@@ -244,6 +249,7 @@ typedef struct {
 
     usize loop_depth;
     usize function_depth;
+    usize this_depth;
 } parser_t;
 
 static const struct {
@@ -288,9 +294,15 @@ typedef struct var_pool_entry {
     struct var_pool_entry *next;
 } var_pool_entry_t;
 
-typedef struct {
+typedef struct var_pool {
     var_pool_entry_t *head;
 } var_pool_t;
+
+typedef struct {
+    var_pool_t *pool;
+    const char *name;
+    value_t value;
+} instance_property_t;
 
 typedef struct {
     var_pool_t *items;
@@ -381,6 +393,9 @@ eval_result_t interpret_unary(context_t *ctx, node_id id, environment_t *global_
                               environment_t *env);
 eval_result_t interpret_ternary(context_t *ctx, node_id id, environment_t *global_env,
                                 environment_t *env);
+eval_result_t interpret_args(context_t *ctx, ast_nodes_t *params, ast_nodes_t *args,
+                             environment_t *global_env, environment_t *env,
+                             environment_t *local_env, source_loc_t loc);
 eval_result_t interpret_fun_call(context_t *ctx, eval_result_t callee_result, ast_node_t *node,
                                  environment_t *global_env, environment_t *env);
 eval_result_t interpret_class_instantiation(context_t *ctx, eval_result_t callee_result,
@@ -394,6 +409,8 @@ eval_result_t create_eval_return(void);
 eval_result_t create_eval_result(eval_type_t type, value_t value);
 value_t create_value(value_type_t type, value_as_t as);
 value_t create_uninitialized_value(void);
+
+value_t get_instance_property(const char *field_name, value_t class_instance);
 
 bool is_truthy(value_t value);
 bool is_equal(value_t a, value_t b);
@@ -504,6 +521,7 @@ void run(context_t *ctx)
     parser.tokens_size = lexer.tokens.size;
     parser.loop_depth = 0;
     parser.function_depth = 0;
+    parser.this_depth = 0;
     parser_parse(ctx, &parser);
 
     if (had_error)
@@ -536,29 +554,28 @@ eval_result_t run_declarations(context_t *ctx, ast_nodes_t *declarations, enviro
             return result;
         }
 
-        if (node->type == NODE_CALL || node->type == NODE_ASSIGN || node->type == NODE_SET ||
-            strcmp(ctx->cmd, "run") == 0)
+        if (node->type == NODE_CALL || node->type == NODE_ASSIGN || strcmp(ctx->cmd, "run") == 0)
             continue;
 
         switch (result.value.type) {
-        case VALUE_NUMBER: {
-            printf("%g\n", result.value.as.number);
+            case VALUE_NUMBER: {
+                printf("%g\n", result.value.as.number);
 
-        } break;
-        case VALUE_BOOL: {
-            printf("%s\n", result.value.as.boolean ? "true" : "false");
+            } break;
+            case VALUE_BOOL: {
+                printf("%s\n", result.value.as.boolean ? "true" : "false");
 
-        } break;
-        case VALUE_STRING: {
-            printf("%s\n", result.value.as.string);
+            } break;
+            case VALUE_STRING: {
+                printf("%s\n", result.value.as.string);
 
-        } break;
-        case VALUE_NIL: {
-            printf("nil\n");
+            } break;
+            case VALUE_NIL: {
+                printf("nil\n");
 
-        } break;
-        default:
-            break;
+            } break;
+            default:
+                break;
         }
     }
 
@@ -618,44 +635,46 @@ node_id parser_parse_declaration(context_t *ctx, parser_t *parser)
     token_t tok = parser_peek(parser);
 
     switch (tok.type) {
-    case VAR: {
-        node_id node = parser_parse_var_declaration(ctx, parser);
+        case VAR: {
+            node_id node = parser_parse_var_declaration(ctx, parser);
 
-        if (node == NULL_NODE)
-            parser_synchronize(parser);
+            if (node == NULL_NODE)
+                parser_synchronize(parser);
 
-        parser_consume(ctx, parser, SEMICOLON, "Expected ';' at the end of 'var' declaration");
+            parser_consume(ctx, parser, SEMICOLON, "Expected ';' at the end of 'var' declaration");
 
-        return node;
-    }
-    case FUN: {
-        parser->function_depth += 1;
-        node_id node = parser_parse_fun_declaration(ctx, parser);
-        parser->function_depth -= 1;
+            return node;
+        }
+        case FUN: {
+            parser->function_depth += 1;
+            node_id node = parser_parse_fun_declaration(ctx, parser);
+            parser->function_depth -= 1;
 
-        if (node == NULL_NODE)
-            parser_synchronize(parser);
+            if (node == NULL_NODE)
+                parser_synchronize(parser);
 
-        if (parser_match(parser, SEMICOLON))
-            parser_advance(parser);
+            if (parser_match(parser, SEMICOLON))
+                parser_advance(parser);
 
-        return node;
-    }
+            return node;
+        }
 
-    case CLASS: {
-        node_id node = parser_parse_class_declaration(ctx, parser);
+        case CLASS: {
+            parser->this_depth += 1;
+            node_id node = parser_parse_class_declaration(ctx, parser);
+            parser->this_depth -= 1;
 
-        if (node == NULL_NODE)
-            parser_synchronize(parser);
+            if (node == NULL_NODE)
+                parser_synchronize(parser);
 
-        if (parser_match(parser, SEMICOLON))
-            parser_advance(parser);
+            if (parser_match(parser, SEMICOLON))
+                parser_advance(parser);
 
-        return node;
-    }
+            return node;
+        }
 
-    default:
-        return parser_parse_statement(ctx, parser);
+        default:
+            return parser_parse_statement(ctx, parser);
     }
 }
 
@@ -794,86 +813,87 @@ node_id parser_parse_statement(context_t *ctx, parser_t *parser)
     token_t tok = parser_peek(parser);
 
     switch (tok.type) {
-    case RETURN: {
-        parser_advance(parser);
+        case RETURN: {
+            parser_advance(parser);
 
-        if (parser->function_depth == 0)
-            report_error_at_token(ctx, parser_previous(parser),
-                                  "Syntax Error: Invalid return statement");
+            if (parser->function_depth == 0)
+                report_error_at_token(ctx, parser_previous(parser),
+                                      "Syntax Error: Invalid return statement");
 
-        node_id node = parser_parse_expression(ctx, parser);
+            node_id node = parser_parse_expression(ctx, parser);
 
-        if (node == NULL_NODE || get_node(ctx, node)->type != NODE_FUN)
-            parser_consume(ctx, parser, SEMICOLON, "Expected ';' after return");
+            if (node == NULL_NODE || get_node(ctx, node)->type != NODE_FUN)
+                parser_consume(ctx, parser, SEMICOLON, "Expected ';' after return");
 
-        usize end = node != NULL_NODE ? get_node(ctx, node)->end : tok.cursor + tok.lexeme_len - 1;
-        return parser_create_node(ctx, NODE_RETURN, (node_value_t){ .return_value = node },
-                                  tok.cursor, end);
-    }
+            usize end = node != NULL_NODE ? get_node(ctx, node)->end :
+                                            tok.cursor + tok.lexeme_len - 1;
+            return parser_create_node(ctx, NODE_RETURN, (node_value_t){ .return_value = node },
+                                      tok.cursor, end);
+        }
 
-    case BREAK: {
-        parser_advance(parser);
+        case BREAK: {
+            parser_advance(parser);
 
-        if (parser->loop_depth == 0)
-            report_error_at_token(ctx, parser_previous(parser),
-                                  "Syntax Error: Invalid break statement");
+            if (parser->loop_depth == 0)
+                report_error_at_token(ctx, parser_previous(parser),
+                                      "Syntax Error: Invalid break statement");
 
-        parser_consume(ctx, parser, SEMICOLON, "Expected ';' after break");
+            parser_consume(ctx, parser, SEMICOLON, "Expected ';' after break");
 
-        return parser_create_node(ctx, NODE_BREAK, (node_value_t){}, tok.cursor, tok.cursor);
-    }
+            return parser_create_node(ctx, NODE_BREAK, (node_value_t){}, tok.cursor, tok.cursor);
+        }
 
-    case FOR: {
-        parser->loop_depth += 1;
-        node_id node = parser_parse_for_stmt(ctx, parser);
-        parser->loop_depth -= 1;
+        case FOR: {
+            parser->loop_depth += 1;
+            node_id node = parser_parse_for_stmt(ctx, parser);
+            parser->loop_depth -= 1;
 
-        return node;
-    }
+            return node;
+        }
 
-    case WHILE: {
-        parser->loop_depth += 1;
-        node_id node = parser_parse_while_stmt(ctx, parser);
-        parser->loop_depth -= 1;
+        case WHILE: {
+            parser->loop_depth += 1;
+            node_id node = parser_parse_while_stmt(ctx, parser);
+            parser->loop_depth -= 1;
 
-        return node;
-    }
+            return node;
+        }
 
-    case IF: {
-        return parser_parse_if_stmt(ctx, parser);
-    }
+        case IF: {
+            return parser_parse_if_stmt(ctx, parser);
+        }
 
-    case ELSE: {
-        parser_advance(parser);
-        report(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source, tok.line_start,
-               "Missing 'if' statement");
-        return NULL_NODE;
-    }
-
-    case PRINT: {
-        node_id node = parser_parse_print_stmt(ctx, parser);
-
-        parser_consume(ctx, parser, SEMICOLON, "Expected ';' after print statement");
-
-        return node;
-    }
-
-    case LEFT_BRACE: {
-        return parser_parse_block(ctx, parser);
-    }
-
-    default: {
-        node_id node = parser_parse_expression(ctx, parser);
-
-        if (node == NULL_NODE) {
-            parser_synchronize(parser);
+        case ELSE: {
+            parser_advance(parser);
+            report(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source, tok.line_start,
+                   "Missing 'if' statement");
             return NULL_NODE;
         }
 
-        parser_consume(ctx, parser, SEMICOLON, "Expected ';' after expression");
+        case PRINT: {
+            node_id node = parser_parse_print_stmt(ctx, parser);
 
-        return node;
-    }
+            parser_consume(ctx, parser, SEMICOLON, "Expected ';' after print statement");
+
+            return node;
+        }
+
+        case LEFT_BRACE: {
+            return parser_parse_block(ctx, parser);
+        }
+
+        default: {
+            node_id node = parser_parse_expression(ctx, parser);
+
+            if (node == NULL_NODE) {
+                parser_synchronize(parser);
+                return NULL_NODE;
+            }
+
+            parser_consume(ctx, parser, SEMICOLON, "Expected ';' after expression");
+
+            return node;
+        }
     }
 }
 
@@ -1138,6 +1158,25 @@ node_id parser_parse_assignment(context_t *ctx, parser_t *parser)
     if (parser_match(parser, EQUAL)) {
         ast_node_t *node = get_node(ctx, left);
 
+        if (node->type == NODE_GET) {
+            parser_consume(ctx, parser, EQUAL, "Expected '='");
+            node_id right = parser_parse_assignment(ctx, parser);
+
+            if (right == NULL_NODE) {
+                report_error_at_token(ctx, parser_previous(parser),
+                                      "Expected expression after '='");
+                return NULL_NODE;
+            }
+
+            usize start = get_node(ctx, left)->start;
+
+            return parser_create_node(ctx, NODE_SET,
+                                      (node_value_t){ .set.instance = node->value.get.instance,
+                                                      .set.property = node->value.get.property,
+                                                      .set.expression = right },
+                                      start, get_node(ctx, right)->end);
+        }
+
         if (node->type == NODE_IDENTIFIER) {
             parser_consume(ctx, parser, EQUAL, "Expected '='");
             node_id right = parser_parse_assignment(ctx, parser);
@@ -1152,24 +1191,6 @@ node_id parser_parse_assignment(context_t *ctx, parser_t *parser)
             return parser_create_node(ctx, NODE_ASSIGN,
                                       (node_value_t){ .assign.identifier = left,
                                                       .assign.expression = right },
-                                      start, get_node(ctx, right)->end);
-        }
-
-        if (node->type == NODE_GET) {
-            parser_consume(ctx, parser, EQUAL, "Expected '='");
-            node_id right = parser_parse_assignment(ctx, parser);
-
-            if (right == NULL_NODE) {
-                report_error_at_token(ctx, parser_previous(parser),
-                                      "Expected expression after '='");
-                return NULL_NODE;
-            }
-
-            usize start = get_node(ctx, left)->start;
-            return parser_create_node(ctx, NODE_SET,
-                                      (node_value_t){ .set.instance = node->value.get.instance,
-                                                      .set.property = node->value.get.property,
-                                                      .set.expression = right },
                                       start, get_node(ctx, right)->end);
         }
 
@@ -1413,37 +1434,39 @@ node_id parser_parse_unary(context_t *ctx, parser_t *parser)
     token_t tok = parser_peek(parser);
 
     switch (tok.type) {
-    case PLUS:
-    case MINUS: {
-        parser_advance(parser);
-        node_id operand = parser_parse_call(ctx, parser);
-        if (operand == NULL_NODE) {
-            report_error_at_token(ctx, tok, "Unary operator must have an operand");
-            return NULL_NODE;
+        case PLUS:
+        case MINUS: {
+            parser_advance(parser);
+            node_id operand = parser_parse_call(ctx, parser);
+            if (operand == NULL_NODE) {
+                report_error_at_token(ctx, tok, "Unary operator must have an operand");
+                return NULL_NODE;
+            }
+
+            node_value_t value = { .unary = { .op = tok, .child = operand } };
+            return parser_create_node(ctx, NODE_UNARY, value, tok.cursor,
+                                      get_node(ctx, operand)->end);
+        };
+
+        case BANG: {
+            parser_advance(parser);
+
+            bool is_bang = parser_match(parser, BANG);
+            node_id operand = is_bang ? parser_parse_unary(ctx, parser) :
+                                        parser_parse_call(ctx, parser);
+
+            if (operand == NULL_NODE) {
+                report_error_at_token(ctx, tok, "Unary operator must have an operand");
+                return NULL_NODE;
+            }
+
+            node_value_t value = { .unary = { .op = tok, .child = operand } };
+            return parser_create_node(ctx, NODE_UNARY, value, tok.cursor,
+                                      get_node(ctx, operand)->end);
         }
 
-        node_value_t value = { .unary = { .op = tok, .child = operand } };
-        return parser_create_node(ctx, NODE_UNARY, value, tok.cursor, get_node(ctx, operand)->end);
-    };
-
-    case BANG: {
-        parser_advance(parser);
-
-        bool is_bang = parser_match(parser, BANG);
-        node_id operand = is_bang ? parser_parse_unary(ctx, parser) :
-                                    parser_parse_call(ctx, parser);
-
-        if (operand == NULL_NODE) {
-            report_error_at_token(ctx, tok, "Unary operator must have an operand");
-            return NULL_NODE;
-        }
-
-        node_value_t value = { .unary = { .op = tok, .child = operand } };
-        return parser_create_node(ctx, NODE_UNARY, value, tok.cursor, get_node(ctx, operand)->end);
-    }
-
-    default:
-        break;
+        default:
+            break;
     }
 
     return parser_parse_call(ctx, parser);
@@ -1519,7 +1542,19 @@ node_id parser_parse_primary(context_t *ctx, parser_t *parser)
     if (parser_match(parser, NIL)) {
         token_t tok = parser_advance(parser);
 
-        return parser_create_node(ctx, NODE_NIL, (node_value_t){}, tok.cursor, tok.cursor + 2);
+        return parser_create_node(ctx, NODE_NIL, (node_value_t){}, tok.cursor,
+                                  tok.cursor + tok.lexeme_len);
+    }
+
+    if (parser_match(parser, THIS)) {
+        token_t tok = parser_advance(parser);
+
+        if (parser->this_depth == 0)
+            report_error_at_token(ctx, parser_previous(parser),
+                                  "Syntax Error: Invalid usage of 'this'");
+
+        return parser_create_node(ctx, NODE_THIS, (node_value_t){}, tok.cursor,
+                                  tok.cursor + tok.lexeme_len);
     }
 
     if (parser_match(parser, IDENTIFIER))
@@ -1799,18 +1834,18 @@ void parser_synchronize(parser_t *parser)
             return;
 
         switch (parser_peek(parser).type) {
-        case CLASS:
-        case FUN:
-        case VAR:
-        case FOR:
-        case IF:
-        case WHILE:
-        case BREAK:
-        case PRINT:
-        case RETURN:
-            return;
-        default:
-            break;
+            case CLASS:
+            case FUN:
+            case VAR:
+            case FOR:
+            case IF:
+            case WHILE:
+            case BREAK:
+            case PRINT:
+            case RETURN:
+                return;
+            default:
+                break;
         }
 
         parser_advance(parser);
@@ -1834,110 +1869,116 @@ void lexer_tokenize(context_t *ctx, lexer_t *lexer)
             continue;
 
         switch (ch) {
-        case '(': {
-            lexer_append_token(ctx, lexer, LEFT_PAREN, lexeme, 1, line_idx, col_idx, cursor,
-                               line_start);
-        } break;
-
-        case ')': {
-            lexer_append_token(ctx, lexer, RIGHT_PAREN, lexeme, 1, line_idx, col_idx, cursor,
-                               line_start);
-        } break;
-
-        case '{': {
-            lexer_append_token(ctx, lexer, LEFT_BRACE, lexeme, 1, line_idx, col_idx, cursor,
-                               line_start);
-        } break;
-
-        case '}': {
-            lexer_append_token(ctx, lexer, RIGHT_BRACE, lexeme, 1, line_idx, col_idx, cursor,
-                               line_start);
-        } break;
-
-        case ',': {
-            lexer_append_token(ctx, lexer, COMMA, lexeme, 1, line_idx, col_idx, cursor, line_start);
-        } break;
-
-        case '.': {
-            lexer_append_token(ctx, lexer, DOT, lexeme, 1, line_idx, col_idx, cursor, line_start);
-        } break;
-
-        case '-': {
-            lexer_append_token(ctx, lexer, MINUS, lexeme, 1, line_idx, col_idx, cursor, line_start);
-        } break;
-
-        case '+': {
-            lexer_append_token(ctx, lexer, PLUS, lexeme, 1, line_idx, col_idx, cursor, line_start);
-        } break;
-
-        case ';': {
-            lexer_append_token(ctx, lexer, SEMICOLON, lexeme, 1, line_idx, col_idx, cursor,
-                               line_start);
-        } break;
-
-        case '*': {
-            lexer_append_token(ctx, lexer, STAR, lexeme, 1, line_idx, col_idx, cursor, line_start);
-        } break;
-
-        case '?': {
-            lexer_append_token(ctx, lexer, QUESTION_MARK, lexeme, 1, line_idx, col_idx, cursor,
-                               line_start);
-        } break;
-
-        case ':': {
-            lexer_append_token(ctx, lexer, COLON, lexeme, 1, line_idx, col_idx, cursor, line_start);
-        } break;
-
-        case '!': {
-            bool is_match = lexer_match(ctx, lexer, '=');
-            lexer_append_token(ctx, lexer, is_match ? BANG_EQUAL : BANG, lexeme, is_match ? 2 : 1,
-                               line_idx, col_idx, cursor, line_start);
-        } break;
-
-        case '=': {
-            bool is_match = lexer_match(ctx, lexer, '=');
-            lexer_append_token(ctx, lexer, is_match ? EQUAL_EQUAL : EQUAL, lexeme, is_match ? 2 : 1,
-                               line_idx, col_idx, cursor, line_start);
-        } break;
-
-        case '>': {
-            bool is_match = lexer_match(ctx, lexer, '=');
-            lexer_append_token(ctx, lexer, is_match ? GREATER_EQUAL : GREATER, lexeme,
-                               is_match ? 2 : 1, line_idx, col_idx, cursor, line_start);
-        } break;
-
-        case '<': {
-            bool is_match = lexer_match(ctx, lexer, '=');
-            lexer_append_token(ctx, lexer, is_match ? LESS_EQUAL : LESS, lexeme, is_match ? 2 : 1,
-                               line_idx, col_idx, cursor, line_start);
-        } break;
-
-        case '/': {
-            if (lexer_match(ctx, lexer, '/')) {
-                while (lexer_peek(ctx, lexer) != '\n' && !lexer_is_at_end(ctx, lexer))
-                    lexer_advance(ctx, lexer);
-            } else if (lexer_match(ctx, lexer, '*')) {
-                lexer_comment_block(ctx, lexer);
-            } else {
-                lexer_append_token(ctx, lexer, SLASH, lexeme, 1, line_idx, col_idx, cursor,
+            case '(': {
+                lexer_append_token(ctx, lexer, LEFT_PAREN, lexeme, 1, line_idx, col_idx, cursor,
                                    line_start);
-            }
-        } break;
+            } break;
 
-        case '"': {
-            lexer_string(ctx, lexer);
-        } break;
+            case ')': {
+                lexer_append_token(ctx, lexer, RIGHT_PAREN, lexeme, 1, line_idx, col_idx, cursor,
+                                   line_start);
+            } break;
 
-        default: {
-            if (isdigit(ch)) {
-                lexer_number(ctx, lexer);
-            } else if (lexer_is_alphanum(ch)) {
-                lexer_identifier(ctx, lexer);
-            } else {
-                report(line_idx, col_idx, ctx->source_filename, ctx->source, line_start,
-                       "Unexpected character.");
-            }
-        } break;
+            case '{': {
+                lexer_append_token(ctx, lexer, LEFT_BRACE, lexeme, 1, line_idx, col_idx, cursor,
+                                   line_start);
+            } break;
+
+            case '}': {
+                lexer_append_token(ctx, lexer, RIGHT_BRACE, lexeme, 1, line_idx, col_idx, cursor,
+                                   line_start);
+            } break;
+
+            case ',': {
+                lexer_append_token(ctx, lexer, COMMA, lexeme, 1, line_idx, col_idx, cursor,
+                                   line_start);
+            } break;
+
+            case '.': {
+                lexer_append_token(ctx, lexer, DOT, lexeme, 1, line_idx, col_idx, cursor,
+                                   line_start);
+            } break;
+
+            case '-': {
+                lexer_append_token(ctx, lexer, MINUS, lexeme, 1, line_idx, col_idx, cursor,
+                                   line_start);
+            } break;
+
+            case '+': {
+                lexer_append_token(ctx, lexer, PLUS, lexeme, 1, line_idx, col_idx, cursor,
+                                   line_start);
+            } break;
+
+            case ';': {
+                lexer_append_token(ctx, lexer, SEMICOLON, lexeme, 1, line_idx, col_idx, cursor,
+                                   line_start);
+            } break;
+
+            case '*': {
+                lexer_append_token(ctx, lexer, STAR, lexeme, 1, line_idx, col_idx, cursor,
+                                   line_start);
+            } break;
+
+            case '?': {
+                lexer_append_token(ctx, lexer, QUESTION_MARK, lexeme, 1, line_idx, col_idx, cursor,
+                                   line_start);
+            } break;
+
+            case ':': {
+                lexer_append_token(ctx, lexer, COLON, lexeme, 1, line_idx, col_idx, cursor,
+                                   line_start);
+            } break;
+
+            case '!': {
+                bool is_match = lexer_match(ctx, lexer, '=');
+                lexer_append_token(ctx, lexer, is_match ? BANG_EQUAL : BANG, lexeme,
+                                   is_match ? 2 : 1, line_idx, col_idx, cursor, line_start);
+            } break;
+
+            case '=': {
+                bool is_match = lexer_match(ctx, lexer, '=');
+                lexer_append_token(ctx, lexer, is_match ? EQUAL_EQUAL : EQUAL, lexeme,
+                                   is_match ? 2 : 1, line_idx, col_idx, cursor, line_start);
+            } break;
+
+            case '>': {
+                bool is_match = lexer_match(ctx, lexer, '=');
+                lexer_append_token(ctx, lexer, is_match ? GREATER_EQUAL : GREATER, lexeme,
+                                   is_match ? 2 : 1, line_idx, col_idx, cursor, line_start);
+            } break;
+
+            case '<': {
+                bool is_match = lexer_match(ctx, lexer, '=');
+                lexer_append_token(ctx, lexer, is_match ? LESS_EQUAL : LESS, lexeme,
+                                   is_match ? 2 : 1, line_idx, col_idx, cursor, line_start);
+            } break;
+
+            case '/': {
+                if (lexer_match(ctx, lexer, '/')) {
+                    while (lexer_peek(ctx, lexer) != '\n' && !lexer_is_at_end(ctx, lexer))
+                        lexer_advance(ctx, lexer);
+                } else if (lexer_match(ctx, lexer, '*')) {
+                    lexer_comment_block(ctx, lexer);
+                } else {
+                    lexer_append_token(ctx, lexer, SLASH, lexeme, 1, line_idx, col_idx, cursor,
+                                       line_start);
+                }
+            } break;
+
+            case '"': {
+                lexer_string(ctx, lexer);
+            } break;
+
+            default: {
+                if (isdigit(ch)) {
+                    lexer_number(ctx, lexer);
+                } else if (lexer_is_alphanum(ch)) {
+                    lexer_identifier(ctx, lexer);
+                } else {
+                    report(line_idx, col_idx, ctx->source_filename, ctx->source, line_start,
+                           "Unexpected character.");
+                }
+            } break;
         }
     }
 
@@ -2196,51 +2237,22 @@ void resolve_variable(context_t *ctx, scopes_t *scopes, node_id id)
         return;
 
     switch (node->type) {
-    case NODE_VAR: {
-        assert(node->value.var_decl.identifier);
-        const char *name = get_node(ctx, node->value.var_decl.identifier)->value.identifier.name;
-        set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], name, (value_t){});
-        resolve_variable(ctx, scopes, node->value.var_decl.expression);
-    } break;
-
-    case NODE_FUN: {
-        if (node->value.fun_decl.name) {
-            const char *name = get_node(ctx, node->value.fun_decl.name)->value.identifier.name;
+        case NODE_VAR: {
+            assert(node->value.var_decl.identifier);
+            const char *name =
+                get_node(ctx, node->value.var_decl.identifier)->value.identifier.name;
             set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], name, (value_t){});
-        }
+            resolve_variable(ctx, scopes, node->value.var_decl.expression);
+        } break;
 
-        arena_da_append(ctx->arena, scopes, (var_pool_t){ .head = NULL });
-        ast_nodes_t *params = node->value.fun_decl.params;
-        if (params && params->size) {
-            for (usize i = 0; i < params->size; ++i) {
-                const char *param = get_node(ctx, params->items[i])->value.identifier.name;
-                assert(param);
-                set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], param, (value_t){});
+        case NODE_FUN: {
+            if (node->value.fun_decl.name) {
+                const char *name = get_node(ctx, node->value.fun_decl.name)->value.identifier.name;
+                set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], name, (value_t){});
             }
-        }
-
-        ast_nodes_t *declarations =
-            get_node(ctx, node->value.fun_decl.body)->value.block_declarations;
-        for (usize i = 0; i < declarations->size; ++i)
-            resolve_variable(ctx, scopes, declarations->items[i]);
-
-        scopes->size -= 1;
-    } break;
-
-    case NODE_CLASS: {
-        if (node->value.class_decl.name) {
-            const char *name = get_node(ctx, node->value.class_decl.name)->value.identifier.name;
-            set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], name, (value_t){});
-        }
-
-        ast_nodes_t *methods = node->value.class_decl.methods;
-        for (usize i = 0; i < methods->size; ++i) {
-            ast_node_t *fun = get_node(ctx, methods->items[i]);
-            ast_node_t *ident = get_node(ctx, fun->value.fun_decl.name);
-            ident->value.identifier.depth = 0;
 
             arena_da_append(ctx->arena, scopes, (var_pool_t){ .head = NULL });
-            ast_nodes_t *params = fun->value.fun_decl.params;
+            ast_nodes_t *params = node->value.fun_decl.params;
             if (params && params->size) {
                 for (usize i = 0; i < params->size; ++i) {
                     const char *param = get_node(ctx, params->items[i])->value.identifier.name;
@@ -2250,116 +2262,182 @@ void resolve_variable(context_t *ctx, scopes_t *scopes, node_id id)
             }
 
             ast_nodes_t *declarations =
-                get_node(ctx, fun->value.fun_decl.body)->value.block_declarations;
-
+                get_node(ctx, node->value.fun_decl.body)->value.block_declarations;
             for (usize i = 0; i < declarations->size; ++i)
                 resolve_variable(ctx, scopes, declarations->items[i]);
 
             scopes->size -= 1;
-        }
-    } break;
+        } break;
 
-    case NODE_PRINT: {
-        resolve_variable(ctx, scopes, node->value.print_stmt);
-    } break;
-
-    case NODE_BINARY: {
-        resolve_variable(ctx, scopes, node->value.binary.left);
-        resolve_variable(ctx, scopes, node->value.binary.right);
-    } break;
-
-    case NODE_UNARY: {
-        resolve_variable(ctx, scopes, node->value.unary.child);
-    } break;
-
-    case NODE_IF: {
-        resolve_variable(ctx, scopes, node->value.if_stmt.condition);
-        resolve_variable(ctx, scopes, node->value.if_stmt.then_branch);
-        resolve_variable(ctx, scopes, node->value.if_stmt.else_branch);
-    } break;
-
-    case NODE_TERNARY: {
-        resolve_variable(ctx, scopes, node->value.ternary.condition);
-        resolve_variable(ctx, scopes, node->value.ternary.true_branch);
-        resolve_variable(ctx, scopes, node->value.ternary.false_branch);
-    } break;
-
-    case NODE_ASSIGN: {
-        resolve_variable(ctx, scopes, node->value.assign.identifier);
-        resolve_variable(ctx, scopes, node->value.assign.expression);
-    } break;
-
-    case NODE_WHILE: {
-        resolve_variable(ctx, scopes, node->value.while_stmt.condition);
-        resolve_variable(ctx, scopes, node->value.while_stmt.body);
-    } break;
-
-    case NODE_FOR: {
-        arena_da_append(ctx->arena, scopes, (var_pool_t){ .head = NULL });
-        resolve_variable(ctx, scopes, node->value.for_stmt.initializer);
-        resolve_variable(ctx, scopes, node->value.for_stmt.condition);
-        resolve_variable(ctx, scopes, node->value.for_stmt.increment);
-        resolve_variable(ctx, scopes, node->value.for_stmt.body);
-        scopes->size -= 1;
-    } break;
-
-    case NODE_BLOCK: {
-        ast_nodes_t *declarations = node->value.block_declarations;
-        resolve_variables(ctx, scopes, declarations);
-    } break;
-
-    case NODE_RETURN: {
-        resolve_variable(ctx, scopes, node->value.return_value);
-    } break;
-
-    case NODE_IDENTIFIER: {
-        const char *name = node->value.identifier.name;
-        bool found = false;
-
-        for (int i = (int)scopes->size - 1; i >= 0; --i) {
-            var_pool_entry_t *current = scopes->items[i].head;
-
-            while (current) {
-                if (current->str == name) {
-                    int depth = i == 0 ? -1 : (int)(scopes->size - 1) - i;
-
-                    node->value.identifier.depth = depth;
-                    current->used = true;
-                    found = true;
-                    break;
-                }
-                current = current->next;
+        case NODE_CLASS: {
+            if (node->value.class_decl.name) {
+                const char *name =
+                    get_node(ctx, node->value.class_decl.name)->value.identifier.name;
+                set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], name, (value_t){});
             }
 
-            if (found)
-                break;
-        }
-    } break;
+            ast_nodes_t *methods = node->value.class_decl.methods;
+            for (usize i = 0; i < methods->size; ++i) {
+                ast_node_t *fun = get_node(ctx, methods->items[i]);
+                ast_node_t *ident = get_node(ctx, fun->value.fun_decl.name);
+                ident->value.identifier.depth = 0;
 
-    case NODE_CALL: {
-        resolve_variable(ctx, scopes, node->value.call.callee);
+                arena_da_append(ctx->arena, scopes, (var_pool_t){ .head = NULL });
+                set_var_entry(ctx->arena, &scopes->items[scopes->size - 1],
+                              intern(ctx->arena, "this"), (value_t){});
 
-        ast_nodes_t *args = node->value.call.args;
+                ast_nodes_t *params = fun->value.fun_decl.params;
+                if (params && params->size) {
+                    for (usize i = 0; i < params->size; ++i) {
+                        const char *param = get_node(ctx, params->items[i])->value.identifier.name;
+                        assert(param);
+                        set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], param,
+                                      (value_t){});
+                    }
+                }
 
-        if (args && args->size) {
-            for (usize i = 0; i < args->size; ++i)
-                resolve_variable(ctx, scopes, args->items[i]);
-        }
-    } break;
+                const char *name = ident->value.identifier.name;
+                bool is_init = strcmp(name, "init") == 0;
 
-    case NODE_GET: {
-        resolve_variable(ctx, scopes, node->value.get.instance);
-        resolve_variable(ctx, scopes, node->value.get.property);
-    } break;
+                if (is_init)
+                    scopes->size -= 1;
 
-    case NODE_SET: {
-        resolve_variable(ctx, scopes, node->value.set.instance);
-        resolve_variable(ctx, scopes, node->value.set.property);
-        resolve_variable(ctx, scopes, node->value.set.expression);
-    } break;
+                ast_nodes_t *declarations =
+                    get_node(ctx, fun->value.fun_decl.body)->value.block_declarations;
 
-    default:
-        break;
+                for (usize i = 0; i < declarations->size; ++i)
+                    resolve_variable(ctx, scopes, declarations->items[i]);
+
+                if (is_init)
+                    scopes->size += 1;
+
+                scopes->size -= 1;
+            }
+        } break;
+
+        case NODE_PRINT: {
+            resolve_variable(ctx, scopes, node->value.print_stmt);
+        } break;
+
+        case NODE_BINARY: {
+            resolve_variable(ctx, scopes, node->value.binary.left);
+            resolve_variable(ctx, scopes, node->value.binary.right);
+        } break;
+
+        case NODE_UNARY: {
+            resolve_variable(ctx, scopes, node->value.unary.child);
+        } break;
+
+        case NODE_IF: {
+            resolve_variable(ctx, scopes, node->value.if_stmt.condition);
+            resolve_variable(ctx, scopes, node->value.if_stmt.then_branch);
+            resolve_variable(ctx, scopes, node->value.if_stmt.else_branch);
+        } break;
+
+        case NODE_TERNARY: {
+            resolve_variable(ctx, scopes, node->value.ternary.condition);
+            resolve_variable(ctx, scopes, node->value.ternary.true_branch);
+            resolve_variable(ctx, scopes, node->value.ternary.false_branch);
+        } break;
+
+        case NODE_ASSIGN: {
+            resolve_variable(ctx, scopes, node->value.assign.identifier);
+            resolve_variable(ctx, scopes, node->value.assign.expression);
+        } break;
+
+        case NODE_WHILE: {
+            resolve_variable(ctx, scopes, node->value.while_stmt.condition);
+            resolve_variable(ctx, scopes, node->value.while_stmt.body);
+        } break;
+
+        case NODE_FOR: {
+            arena_da_append(ctx->arena, scopes, (var_pool_t){ .head = NULL });
+            resolve_variable(ctx, scopes, node->value.for_stmt.initializer);
+            resolve_variable(ctx, scopes, node->value.for_stmt.condition);
+            resolve_variable(ctx, scopes, node->value.for_stmt.increment);
+            resolve_variable(ctx, scopes, node->value.for_stmt.body);
+            scopes->size -= 1;
+        } break;
+
+        case NODE_BLOCK: {
+            ast_nodes_t *declarations = node->value.block_declarations;
+            resolve_variables(ctx, scopes, declarations);
+        } break;
+
+        case NODE_RETURN: {
+            resolve_variable(ctx, scopes, node->value.return_value);
+        } break;
+
+        case NODE_IDENTIFIER: {
+            const char *name = node->value.identifier.name;
+            bool found = false;
+
+            for (int i = (int)scopes->size - 1; i >= 0; --i) {
+                var_pool_entry_t *current = scopes->items[i].head;
+
+                while (current) {
+                    if (current->str == name) {
+                        int depth = i == 0 ? -1 : (int)(scopes->size - 1) - i;
+
+                        node->value.identifier.depth = depth;
+                        current->used = true;
+                        found = true;
+                        break;
+                    }
+                    current = current->next;
+                }
+
+                if (found)
+                    break;
+            }
+        } break;
+
+        case NODE_CALL: {
+            resolve_variable(ctx, scopes, node->value.call.callee);
+
+            ast_nodes_t *args = node->value.call.args;
+
+            if (args && args->size) {
+                for (usize i = 0; i < args->size; ++i)
+                    resolve_variable(ctx, scopes, args->items[i]);
+            }
+        } break;
+
+        case NODE_GET: {
+            resolve_variable(ctx, scopes, node->value.get.instance);
+            resolve_variable(ctx, scopes, node->value.get.property);
+        } break;
+
+        case NODE_SET: {
+            resolve_variable(ctx, scopes, node->value.set.instance);
+            resolve_variable(ctx, scopes, node->value.set.property);
+            resolve_variable(ctx, scopes, node->value.set.expression);
+        } break;
+
+        case NODE_THIS: {
+            bool found = false;
+            const char *this = intern(ctx->arena, "this");
+
+            for (int i = (int)scopes->size - 1; i >= 0; --i) {
+                var_pool_entry_t *current = scopes->items[i].head;
+
+                while (current) {
+                    if (current->str == this) {
+                        node->value.this_context = scopes->size - i;
+                        current->used = true;
+                        found = true;
+                        break;
+                    }
+                    current = current->next;
+                }
+
+                if (found)
+                    break;
+            }
+        } break;
+
+        default:
+            break;
     }
 }
 
@@ -2409,14 +2487,20 @@ err set_var_entry(arena_t *arena, var_pool_t *pool, const char *s, value_t value
     if (!pool)
         return 1;
 
-    var_pool_entry_t *entry = arena_alloc(arena, sizeof(*entry));
-    if (!entry)
+    var_pool_entry_t *entry = get_var_entry(pool, s);
+    if (entry) {
+        entry->value = value;
+        return 0;
+    }
+
+    var_pool_entry_t *new_entry = arena_alloc(arena, sizeof(*new_entry));
+    if (!new_entry)
         return 1;
 
-    entry->str = s;
-    entry->value = value;
-    entry->next = pool->head;
-    pool->head = entry;
+    new_entry->str = s;
+    new_entry->value = value;
+    new_entry->next = pool->head;
+    pool->head = new_entry;
 
     return 0;
 }
@@ -2475,89 +2559,96 @@ bool parser_is_eof(parser_t *parser)
 bool is_truthy(value_t value)
 {
     switch (value.type) {
-    case VALUE_NUMBER:
-        return value.as.number != 0;
+        case VALUE_NUMBER:
+            return value.as.number != 0;
 
-    case VALUE_STRING:
-        return strcmp(value.as.string, "");
+        case VALUE_STRING:
+            return strcmp(value.as.string, "");
 
-    case VALUE_BOOL:
-        return value.as.boolean;
+        case VALUE_BOOL:
+            return value.as.boolean;
 
-    default:
-        return false;
+        default:
+            return false;
     }
 }
 
 bool is_equal(value_t a, value_t b)
 {
     switch (a.type) {
-    case VALUE_NUMBER: {
-        if (b.type != VALUE_NUMBER)
+        case VALUE_NUMBER: {
+            if (b.type != VALUE_NUMBER)
+                return false;
+
+            return a.as.number == b.as.number;
+        }
+
+        case VALUE_STRING: {
+            if (b.type != VALUE_STRING)
+                return false;
+
+            return strcmp(a.as.string, b.as.string) == 0;
+        }
+
+        case VALUE_BOOL: {
+            if (b.type != VALUE_BOOL)
+                return false;
+
+            return a.as.boolean == b.as.boolean;
+        }
+
+        case VALUE_NIL: {
+            return b.type == VALUE_NIL;
+        }
+
+        default:
             return false;
-
-        return a.as.number == b.as.number;
-    }
-
-    case VALUE_STRING: {
-        if (b.type != VALUE_STRING)
-            return false;
-
-        return strcmp(a.as.string, b.as.string) == 0;
-    }
-
-    case VALUE_BOOL:
-        if (b.type != VALUE_BOOL)
-            return false;
-
-        return a.as.boolean == b.as.boolean;
-
-    default:
-        return false;
     }
 }
 
 const char *stringify_value(arena_t *arena, value_t data)
 {
     switch (data.type) {
-    case VALUE_BOOL:
-        return data.as.boolean ? "true" : "false";
-    case VALUE_NUMBER:
-        return number_to_string(arena, data.as.number);
-    case VALUE_NIL:
-        return "nil";
-    case VALUE_STRING:
-        return data.as.string;
-    case VALUE_FUN: {
-        const char *name = data.as.fun_def.name;
-        if (!name)
-            return "<fn (nil)>";
+        case VALUE_BOOL:
+            return data.as.boolean ? "true" : "false";
+        case VALUE_NUMBER:
+            return number_to_string(arena, data.as.number);
+        case VALUE_NIL:
+            return "nil";
+        case VALUE_STRING:
+            return data.as.string;
+        case VALUE_FUN: {
+            const char *name = data.as.fun_def.name;
+            if (!name)
+                return "<fn (nil)>";
 
-        usize num_bytes = strlen(name) + 6; // <fn + space + name + > + null
-        char *str = arena_alloc(arena, num_bytes);
-        snprintf(str, num_bytes, "<fn %s>", name);
-        return str;
-    }
-    case VALUE_CLASS: {
-        const char *name = data.as.class_def.name;
-        if (!name)
-            return "(nil)";
+            usize num_bytes = strlen(name) + 6; // <fn + space + name + > + null
+            char *str = arena_alloc(arena, num_bytes);
+            snprintf(str, num_bytes, "<fn %s>", name);
+            return str;
+        }
+        case VALUE_CLASS: {
+            const char *name = data.as.class_def.name;
+            if (!name)
+                return "(nil)";
 
-        return name;
-    }
-    case VALUE_CLASS_INSTANCE: {
-        const char *name = data.as.class_instance.klass->as.class_def.name;
-        if (!name)
-            return "(nil)";
+            return name;
+        }
+        case VALUE_CLASS_INSTANCE: {
+            const char *name = data.as.class_instance.klass->as.class_def.name;
+            if (!name)
+                return "(nil)";
 
-        usize num_bytes = strlen(name) + 10; // name + space + instance + null
-        char *str = arena_alloc(arena, num_bytes);
-        snprintf(str, num_bytes, "%s instance", name);
+            usize num_bytes = strlen(name) + 10; // name + space + instance + null
+            char *str = arena_alloc(arena, num_bytes);
+            snprintf(str, num_bytes, "%s instance", name);
 
-        return str;
-    }
-    case VALUE_UNINITIALIZED:
-        return NULL;
+            return str;
+        }
+        case VALUE_UNINITIALIZED:
+            return NULL;
+        default:
+            return "";
     }
 }
 
@@ -2566,61 +2657,61 @@ bool interpret_comparison(token_type_t op, value_t a, value_t b)
     assert(a.type == b.type);
 
     switch (a.type) {
-    case VALUE_NUMBER: {
-        double x = a.as.number;
-        double y = b.as.number;
+        case VALUE_NUMBER: {
+            double x = a.as.number;
+            double y = b.as.number;
 
-        switch (op) {
-        case LESS:
-            return x < y;
-        case LESS_EQUAL:
-            return x <= y;
-        case GREATER:
-            return x > y;
-        case GREATER_EQUAL:
-            return x >= y;
+            switch (op) {
+                case LESS:
+                    return x < y;
+                case LESS_EQUAL:
+                    return x <= y;
+                case GREATER:
+                    return x > y;
+                case GREATER_EQUAL:
+                    return x >= y;
+                default:
+                    return false;
+            }
+        }
+
+        case VALUE_STRING: {
+            int cmp = strcmp(a.as.string, b.as.string);
+
+            switch (op) {
+                case LESS:
+                    return cmp < 0;
+                case LESS_EQUAL:
+                    return cmp <= 0;
+                case GREATER:
+                    return cmp > 0;
+                case GREATER_EQUAL:
+                    return cmp >= 0;
+                default:
+                    return false;
+            }
+        }
+
+        case VALUE_BOOL: {
+            int x = a.as.boolean;
+            int y = b.as.boolean;
+
+            switch (op) {
+                case LESS:
+                    return x < y;
+                case LESS_EQUAL:
+                    return x <= y;
+                case GREATER:
+                    return x > y;
+                case GREATER_EQUAL:
+                    return x >= y;
+                default:
+                    return false;
+            }
+        }
+
         default:
             return false;
-        }
-    }
-
-    case VALUE_STRING: {
-        int cmp = strcmp(a.as.string, b.as.string);
-
-        switch (op) {
-        case LESS:
-            return cmp < 0;
-        case LESS_EQUAL:
-            return cmp <= 0;
-        case GREATER:
-            return cmp > 0;
-        case GREATER_EQUAL:
-            return cmp >= 0;
-        default:
-            return false;
-        }
-    }
-
-    case VALUE_BOOL: {
-        int x = a.as.boolean;
-        int y = b.as.boolean;
-
-        switch (op) {
-        case LESS:
-            return x < y;
-        case LESS_EQUAL:
-            return x <= y;
-        case GREATER:
-            return x > y;
-        case GREATER_EQUAL:
-            return x >= y;
-        default:
-            return false;
-        }
-    }
-
-    default:
-        return false;
     }
 }
 
@@ -2631,128 +2722,133 @@ eval_result_t interpret_binary(context_t *ctx, node_id id, environment_t *global
     assert(node->type == NODE_BINARY);
 
     switch (node->value.binary.op.type) {
-    case OR: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
+        case OR: {
+            eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+            eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
-        return is_truthy(left.value) ? left : right;
-    }
+            return is_truthy(left.value) ? left : right;
+        }
 
-    case AND: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
+        case AND: {
+            eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+            eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
-        return is_truthy(left.value) ? right : left;
-    }
+            return is_truthy(left.value) ? right : left;
+        }
 
-    case EQUAL_EQUAL: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
-
-        return create_eval_result(
-            EVAL_OK,
-            create_value(VALUE_BOOL, (value_as_t){ .boolean = is_equal(left.value, right.value) }));
-    }
-
-    case BANG_EQUAL: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
-
-        return create_eval_result(
-            EVAL_OK, create_value(VALUE_BOOL,
-                                  (value_as_t){ .boolean = !is_equal(left.value, right.value) }));
-    }
-
-    case LESS:
-    case LESS_EQUAL:
-    case GREATER:
-    case GREATER_EQUAL: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
-
-        if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
-            return create_eval_error();
-
-        return create_eval_result(
-            EVAL_OK,
-            create_value(VALUE_BOOL,
-                         (value_as_t){ .boolean = interpret_comparison(node->value.binary.op.type,
-                                                                       left.value, right.value) }));
-    }
-
-    case PLUS: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
-
-        if (left.value.type == VALUE_STRING || right.value.type == VALUE_STRING) {
-            const char *left_str = stringify_value(ctx->arena, left.value);
-            const char *right_str = stringify_value(ctx->arena, right.value);
+        case EQUAL_EQUAL: {
+            eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+            eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
             return create_eval_result(
-                EVAL_OK, create_value(VALUE_STRING,
-                                      (value_as_t){
-                                          .string = concat_str(ctx->arena, left_str, right_str),
-                                      }));
+                EVAL_OK,
+                create_value(VALUE_BOOL,
+                             (value_as_t){ .boolean = is_equal(left.value, right.value) }));
         }
 
-        if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
-            return create_eval_error();
+        case BANG_EQUAL: {
+            eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+            eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
-        return create_eval_result(
-            EVAL_OK, create_value(VALUE_NUMBER, (value_as_t){ .number = left.value.as.number +
-                                                                        right.value.as.number }));
-    }
-    case MINUS: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
-
-        if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
-            return create_eval_error();
-
-        return create_eval_result(
-            EVAL_OK, create_value(VALUE_NUMBER, (value_as_t){ .number = left.value.as.number -
-                                                                        right.value.as.number }));
-    }
-
-    case STAR: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
-
-        if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
-            return create_eval_error();
-
-        return create_eval_result(
-            EVAL_OK, create_value(VALUE_NUMBER, (value_as_t){ .number = left.value.as.number *
-                                                                        right.value.as.number }));
-    }
-
-    case SLASH: {
-        eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
-        eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
-
-        if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
-            return create_eval_error();
-
-        if (right.value.as.number == 0.0) {
-            token_t tok = node->value.binary.op;
-            report_runtime(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source,
-                           tok.line_start, "Division by zero.");
-            return create_eval_error();
+            return create_eval_result(
+                EVAL_OK,
+                create_value(VALUE_BOOL,
+                             (value_as_t){ .boolean = !is_equal(left.value, right.value) }));
         }
 
-        return create_eval_result(
-            EVAL_OK, create_value(VALUE_NUMBER, (value_as_t){ .number = left.value.as.number /
-                                                                        right.value.as.number }));
-    }
+        case LESS:
+        case LESS_EQUAL:
+        case GREATER:
+        case GREATER_EQUAL: {
+            eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+            eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
 
-    case COMMA: {
-        interpret(ctx, node->value.binary.left, global_env, env);
-        return interpret(ctx, node->value.binary.right, global_env, env);
-    }
+            if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
+                return create_eval_error();
 
-    default: {
-        __builtin_unreachable();
-    }
+            return create_eval_result(
+                EVAL_OK, create_value(VALUE_BOOL, (value_as_t){ .boolean = interpret_comparison(
+                                                                    node->value.binary.op.type,
+                                                                    left.value, right.value) }));
+        }
+
+        case PLUS: {
+            eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+            eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
+
+            if (left.value.type == VALUE_STRING || right.value.type == VALUE_STRING) {
+                const char *left_str = stringify_value(ctx->arena, left.value);
+                const char *right_str = stringify_value(ctx->arena, right.value);
+
+                return create_eval_result(
+                    EVAL_OK, create_value(VALUE_STRING,
+                                          (value_as_t){
+                                              .string = concat_str(ctx->arena, left_str, right_str),
+                                          }));
+            }
+
+            if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
+                return create_eval_error();
+
+            return create_eval_result(
+                EVAL_OK,
+                create_value(VALUE_NUMBER, (value_as_t){ .number = left.value.as.number +
+                                                                   right.value.as.number }));
+        }
+        case MINUS: {
+            eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+            eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
+
+            if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
+                return create_eval_error();
+
+            return create_eval_result(
+                EVAL_OK,
+                create_value(VALUE_NUMBER, (value_as_t){ .number = left.value.as.number -
+                                                                   right.value.as.number }));
+        }
+
+        case STAR: {
+            eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+            eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
+
+            if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
+                return create_eval_error();
+
+            return create_eval_result(
+                EVAL_OK,
+                create_value(VALUE_NUMBER, (value_as_t){ .number = left.value.as.number *
+                                                                   right.value.as.number }));
+        }
+
+        case SLASH: {
+            eval_result_t left = interpret(ctx, node->value.binary.left, global_env, env);
+            eval_result_t right = interpret(ctx, node->value.binary.right, global_env, env);
+
+            if (!check_number_operands(ctx, node->value.binary.op, left.value, right.value))
+                return create_eval_error();
+
+            if (right.value.as.number == 0.0) {
+                token_t tok = node->value.binary.op;
+                report_runtime(tok.line - 1, tok.col - 1, ctx->source_filename, ctx->source,
+                               tok.line_start, "Division by zero.");
+                return create_eval_error();
+            }
+
+            return create_eval_result(
+                EVAL_OK,
+                create_value(VALUE_NUMBER, (value_as_t){ .number = left.value.as.number /
+                                                                   right.value.as.number }));
+        }
+
+        case COMMA: {
+            interpret(ctx, node->value.binary.left, global_env, env);
+            return interpret(ctx, node->value.binary.right, global_env, env);
+        }
+
+        default: {
+            __builtin_unreachable();
+        }
     }
 }
 
@@ -2762,36 +2858,39 @@ eval_result_t interpret_unary(context_t *ctx, node_id id, environment_t *global_
     ast_node_t *node = get_node(ctx, id);
 
     switch (node->value.unary.op.type) {
-    case BANG: {
-        return create_eval_result(
-            EVAL_OK,
-            create_value(VALUE_BOOL,
-                         (value_as_t){
-                             .boolean = !is_truthy(
-                                 interpret(ctx, node->value.unary.child, global_env, env).value) }));
-    }
+        case BANG: {
+            return create_eval_result(
+                EVAL_OK,
+                create_value(
+                    VALUE_BOOL,
+                    (value_as_t){
+                        .boolean = !is_truthy(
+                            interpret(ctx, node->value.unary.child, global_env, env).value) }));
+        }
 
-    case MINUS: {
-        eval_result_t child = interpret(ctx, node->value.unary.child, global_env, env);
-        if (!check_number_operand(ctx, node->value.unary.op, child.value))
-            return create_eval_error();
+        case MINUS: {
+            eval_result_t child = interpret(ctx, node->value.unary.child, global_env, env);
+            if (!check_number_operand(ctx, node->value.unary.op, child.value))
+                return create_eval_error();
 
-        return create_eval_result(
-            EVAL_OK, create_value(VALUE_NUMBER, (value_as_t){ .number = -child.value.as.number }));
-    }
+            return create_eval_result(
+                EVAL_OK,
+                create_value(VALUE_NUMBER, (value_as_t){ .number = -child.value.as.number }));
+        }
 
-    case PLUS: {
-        eval_result_t child = interpret(ctx, node->value.unary.child, global_env, env);
-        if (!check_number_operand(ctx, node->value.unary.op, child.value))
-            return create_eval_error();
+        case PLUS: {
+            eval_result_t child = interpret(ctx, node->value.unary.child, global_env, env);
+            if (!check_number_operand(ctx, node->value.unary.op, child.value))
+                return create_eval_error();
 
-        return create_eval_result(
-            EVAL_OK, create_value(VALUE_NUMBER, (value_as_t){ .number = +child.value.as.number }));
-    }
+            return create_eval_result(
+                EVAL_OK,
+                create_value(VALUE_NUMBER, (value_as_t){ .number = +child.value.as.number }));
+        }
 
-    default: {
-        __builtin_unreachable();
-    }
+        default: {
+            __builtin_unreachable();
+        }
     }
 }
 
@@ -2808,13 +2907,10 @@ eval_result_t interpret_ternary(context_t *ctx, node_id id, environment_t *globa
     return interpret(ctx, node->value.ternary.false_branch, global_env, env);
 }
 
-eval_result_t interpret_fun_call(context_t *ctx, eval_result_t callee_result, ast_node_t *node,
-                                 environment_t *global_env, environment_t *env)
-
+eval_result_t interpret_args(context_t *ctx, ast_nodes_t *params, ast_nodes_t *args,
+                             environment_t *global_env, environment_t *env,
+                             environment_t *local_env, source_loc_t loc)
 {
-    source_loc_t loc = node->value.call.loc;
-    ast_nodes_t *params = callee_result.value.as.fun_def.params;
-    ast_nodes_t *args = node->value.call.args;
     usize parameters_len = params ? params->size : 0;
     usize arguments_len = args ? args->size : 0;
 
@@ -2828,9 +2924,6 @@ eval_result_t interpret_fun_call(context_t *ctx, eval_result_t callee_result, as
         return create_eval_error();
     }
 
-    environment_t *closure = callee_result.value.as.fun_def.closure;
-    environment_t *local_env = create_env(ctx->arena, closure);
-
     if (args) {
         for (usize i = 0; i < args->size; ++i) {
             eval_result_t result = interpret(ctx, args->items[i], global_env, env);
@@ -2841,6 +2934,23 @@ eval_result_t interpret_fun_call(context_t *ctx, eval_result_t callee_result, as
                 return create_eval_error();
         }
     }
+
+    return create_eval_ok();
+}
+
+eval_result_t interpret_fun_call(context_t *ctx, eval_result_t callee_result, ast_node_t *node,
+                                 environment_t *global_env, environment_t *env)
+
+{
+    source_loc_t loc = node->value.call.loc;
+    ast_nodes_t *params = callee_result.value.as.fun_def.params;
+    ast_nodes_t *args = node->value.call.args;
+
+    environment_t *closure = callee_result.value.as.fun_def.closure;
+    environment_t *local_env = create_env(ctx->arena, closure);
+    eval_result_t args_result = interpret_args(ctx, params, args, global_env, env, local_env, loc);
+    if (args_result.type == EVAL_ERROR)
+        return args_result;
 
     node_id body = callee_result.value.as.fun_def.body;
 
@@ -2858,6 +2968,7 @@ eval_result_t interpret_fun_call(context_t *ctx, eval_result_t callee_result, as
 eval_result_t interpret_class_instantiation(context_t *ctx, eval_result_t callee_result,
                                             ast_node_t *node, environment_t *global_env,
                                             environment_t *env)
+
 {
     source_loc_t loc = node->value.call.loc;
 
@@ -2868,17 +2979,81 @@ eval_result_t interpret_class_instantiation(context_t *ctx, eval_result_t callee
         return create_eval_error();
     }
 
-    value_t data = create_value(
-        VALUE_CLASS_INSTANCE,
-        (value_as_t){ .class_instance = {
-                          .klass = &callee_result.value,
-                          .env = create_env(ctx->arena, callee_result.value.as.class_def.env),
-                      } });
+    environment_t *local_env = create_env(ctx->arena, callee_result.value.as.class_def.env);
+    var_pool_t *fields_pool = arena_alloc(ctx->arena, sizeof(*fields_pool));
+    var_pool_t *methods_pool = arena_alloc(ctx->arena, sizeof(*methods_pool));
+
+    value_t data =
+        create_value(VALUE_CLASS_INSTANCE, (value_as_t){ .class_instance = {
+                                                             .klass = &callee_result.value,
+                                                             .env = local_env,
+                                                             .fields = fields_pool,
+                                                             .methods = methods_pool,
+                                                         } });
+
     data.as.class_instance.name = stringify_value(ctx->arena, data);
+    if (set_var_entry(ctx->arena, &local_env->pool, intern(ctx->arena, "this"), data) != 0)
+        return create_eval_error();
 
     ast_nodes_t *methods = callee_result.value.as.class_def.methods;
-    for (usize i = 0; i < methods->size; ++i)
-        interpret(ctx, methods->items[i], global_env, data.as.class_instance.env);
+
+    for (usize i = 0; i < methods->size; ++i) {
+        const char *method_name =
+            get_node(ctx, get_node(ctx, methods->items[i])->value.fun_decl.name)
+                ->value.identifier.name;
+        eval_result_t res = interpret(ctx, methods->items[i], global_env, local_env);
+        if (res.type != EVAL_OK)
+            continue;
+
+        if (set_var_entry(ctx->arena, methods_pool, method_name, res.value) != 0)
+            return create_eval_error();
+        if (set_var_entry(ctx->arena, &res.value.as.fun_def.closure->pool,
+                          intern(ctx->arena, "this"), data) != 0)
+            return create_eval_error();
+    }
+
+    value_t prop = get_instance_property(intern(ctx->arena, "init"), data);
+
+    if (prop.type != 0 && prop.type != VALUE_FUN) {
+        // TODO(fcasibu): refactor source loc
+        report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source, loc.line_start,
+                       "'init' must be a function");
+
+        return create_eval_error();
+    }
+
+    ast_nodes_t *args = node->value.call.args;
+    eval_result_t args_result =
+        interpret_args(ctx, prop.as.fun_def.params, args, global_env, env, local_env, loc);
+
+    if (args_result.type == EVAL_ERROR)
+        return args_result;
+
+    if (prop.type != 0) {
+        ast_nodes_t *nodes = get_node(ctx, prop.as.fun_def.body)->value.block_declarations;
+        for (usize i = 0; i < nodes->size; ++i) {
+            ast_node_t *node = get_node(ctx, nodes->items[i]);
+            eval_result_t res = interpret(ctx, nodes->items[i], global_env, local_env);
+
+            if (res.type == EVAL_RETURN) {
+                // TODO(fcasibu): refactor source loc
+                report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
+                               loc.line_start, "Cannot use 'return' inside 'init'");
+
+                return create_eval_error();
+            }
+
+            if (res.type != EVAL_OK)
+                continue;
+
+            if (node->type == NODE_SET) {
+                const char *field_name =
+                    get_node(ctx, node->value.set.property)->value.identifier.name;
+                if (set_var_entry(ctx->arena, fields_pool, field_name, res.value) != 0)
+                    return create_eval_error();
+            }
+        }
+    }
 
     return create_eval_result(EVAL_OK, data);
 }
@@ -2889,292 +3064,310 @@ eval_result_t interpret(context_t *ctx, node_id id, environment_t *global_env, e
     assert(node);
 
     switch (node->type) {
-    case NODE_NUMBER:
-        return create_eval_result(
-            EVAL_OK,
-            create_value(VALUE_NUMBER, (value_as_t){ .number = node->value.number_literal }));
+        case NODE_NUMBER:
+            return create_eval_result(
+                EVAL_OK,
+                create_value(VALUE_NUMBER, (value_as_t){ .number = node->value.number_literal }));
 
-    case NODE_STRING:
-        return create_eval_result(
-            EVAL_OK,
-            create_value(VALUE_STRING, (value_as_t){ .string = node->value.string_literal }));
+        case NODE_STRING:
+            return create_eval_result(
+                EVAL_OK,
+                create_value(VALUE_STRING, (value_as_t){ .string = node->value.string_literal }));
 
-    case NODE_BOOL:
-        return create_eval_result(
-            EVAL_OK,
-            create_value(VALUE_BOOL, (value_as_t){ .boolean = node->value.boolean_literal }));
+        case NODE_BOOL:
+            return create_eval_result(
+                EVAL_OK,
+                create_value(VALUE_BOOL, (value_as_t){ .boolean = node->value.boolean_literal }));
 
-    case NODE_NIL:
-        return create_eval_result(EVAL_OK, create_value(VALUE_NIL, (value_as_t){}));
+        case NODE_NIL:
+            return create_eval_result(EVAL_OK, create_value(VALUE_NIL, (value_as_t){}));
 
-    case NODE_FUN: {
-        assert(node->value.fun_decl.body);
+        case NODE_FUN: {
+            assert(node->value.fun_decl.body);
 
-        value_t data =
-            create_value(VALUE_FUN, (value_as_t){ .fun_def = {
-                                                      .params = node->value.fun_decl.params,
-                                                      .body = node->value.fun_decl.body,
-                                                      .closure = env,
-                                                  } });
+            value_t data =
+                create_value(VALUE_FUN, (value_as_t){ .fun_def = {
+                                                          .params = node->value.fun_decl.params,
+                                                          .body = node->value.fun_decl.body,
+                                                          .closure = env,
+                                                      } });
 
-        if (node->value.fun_decl.name) {
-            const char *name = get_node(ctx, node->value.fun_decl.name)->value.identifier.name;
-            data.as.fun_def.name = name;
+            if (node->value.fun_decl.name != NULL_NODE) {
+                const char *name = get_node(ctx, node->value.fun_decl.name)->value.identifier.name;
+                data.as.fun_def.name = name;
 
-            if (set_var_entry(ctx->arena, &env->pool, name, data) != 0)
+                if (set_var_entry(ctx->arena, &env->pool, name, data) != 0)
+                    return create_eval_error();
+            }
+
+            return create_eval_result(EVAL_OK, data);
+        }
+
+        case NODE_CLASS: {
+            value_t data = create_value(VALUE_CLASS,
+                                        (value_as_t){ .class_def = {
+                                                          .methods = node->value.class_decl.methods,
+                                                          .env = create_env(ctx->arena, env),
+                                                      } });
+
+            if (node->value.class_decl.name) {
+                const char *name =
+                    get_node(ctx, node->value.class_decl.name)->value.identifier.name;
+                data.as.class_def.name = name;
+
+                if (set_var_entry(ctx->arena, &env->pool, name, data) != 0)
+                    return create_eval_error();
+
+                return create_eval_ok();
+            }
+
+            return create_eval_result(EVAL_OK, data);
+        }
+
+        case NODE_IDENTIFIER: {
+            var_pool_entry_t *entry = get_var_in_scope(
+                global_env, env, node->value.identifier.depth, node->value.identifier.name);
+            source_loc_t loc = node->value.identifier.loc;
+
+            if (!entry) {
+                report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
+                               loc.line_start, "Variable is not defined");
+                return create_eval_error();
+            }
+
+            if (entry->value.type == VALUE_UNINITIALIZED) {
+                report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
+                               loc.line_start, "Uninitialized variable");
+                return create_eval_error();
+            }
+
+            return create_eval_result(EVAL_OK, entry->value);
+        }
+
+        case NODE_BINARY:
+            return interpret_binary(ctx, id, global_env, env);
+
+        case NODE_UNARY:
+            return interpret_unary(ctx, id, global_env, env);
+
+        case NODE_TERNARY:
+            return interpret_ternary(ctx, id, global_env, env);
+
+        case NODE_PRINT: {
+            eval_result_t result = interpret(ctx, node->value.print_stmt, global_env, env);
+            if (result.type == EVAL_ERROR)
+                return result;
+
+            printf("%s\n", stringify_value(ctx->arena, result.value));
+
+            return create_eval_ok();
+        }
+
+        case NODE_VAR: {
+            const char *identifier =
+                get_node(ctx, node->value.var_decl.identifier)->value.identifier.name;
+            value_t uninitialized_value = create_uninitialized_value();
+
+            if (get_node(ctx, node->value.var_decl.expression)->type == NODE_UNINITIALIZED) {
+                if (set_var_entry(ctx->arena, &env->pool, identifier, uninitialized_value) != 0)
+                    return create_eval_error();
+
+                return create_eval_ok();
+            }
+
+            if (set_var_entry(
+                    ctx->arena, &env->pool, identifier,
+                    interpret(ctx, node->value.var_decl.expression, global_env, env).value) != 0)
                 return create_eval_error();
 
             return create_eval_ok();
         }
 
-        return create_eval_result(EVAL_OK, data);
-    }
+        case NODE_ASSIGN: {
+            ast_node_t *ident_node = get_node(ctx, node->value.assign.identifier);
+            source_loc_t loc = ident_node->value.identifier.loc;
+            var_pool_entry_t *var_entry = get_var_in_scope(global_env, env,
+                                                           ident_node->value.identifier.depth,
+                                                           ident_node->value.identifier.name);
 
-    case NODE_CLASS: {
-        value_t data =
-            create_value(VALUE_CLASS, (value_as_t){ .class_def = {
-                                                        .methods = node->value.class_decl.methods,
-                                                        .env = create_env(ctx->arena, env),
-                                                    } });
+            if (!var_entry) {
+                report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
+                               loc.line_start, "Use of undeclared identifier");
+                return create_eval_error();
+            }
 
-        if (node->value.class_decl.name) {
-            const char *name = get_node(ctx, node->value.class_decl.name)->value.identifier.name;
-            data.as.class_def.name = name;
-
-            if (set_var_entry(ctx->arena, &env->pool, name, data) != 0)
+            eval_result_t result = interpret(ctx, node->value.assign.expression, global_env, env);
+            if (set_var_in_scope(ctx->arena, global_env, env, ident_node->value.identifier.depth,
+                                 ident_node->value.identifier.name, result.value) != 0)
                 return create_eval_error();
 
+            return result;
+        }
+
+        case NODE_BLOCK: {
+            environment_t *local_env = create_env(ctx->arena, env);
+
+            return run_declarations(ctx, node->value.block_declarations, global_env, local_env);
+        };
+
+        case NODE_IF: {
+            assert(node->value.if_stmt.condition);
+
+            eval_result_t condition =
+                interpret(ctx, node->value.if_stmt.condition, global_env, env);
+
+            if (is_truthy(condition.value)) {
+                assert(node->value.if_stmt.then_branch);
+
+                eval_result_t result =
+                    interpret(ctx, node->value.if_stmt.then_branch, global_env, env);
+                if (result.type != EVAL_OK)
+                    return result;
+            } else if (node->value.if_stmt.else_branch) {
+                eval_result_t result =
+                    interpret(ctx, node->value.if_stmt.else_branch, global_env, env);
+                if (result.type != EVAL_OK)
+                    return result;
+            }
+
             return create_eval_ok();
+        };
+
+        case NODE_WHILE: {
+            assert(node->value.while_stmt.condition);
+            assert(node->value.while_stmt.body);
+
+            while (is_truthy(
+                interpret(ctx, node->value.while_stmt.condition, global_env, env).value)) {
+                eval_result_t result = interpret(ctx, node->value.while_stmt.body, global_env, env);
+
+                if (result.type == EVAL_BREAK)
+                    break;
+
+                if (result.type == EVAL_ERROR || result.type == EVAL_RETURN)
+                    return result;
+            }
+
+            return create_eval_ok();
+        };
+
+        case NODE_FOR: {
+            assert(node->value.for_stmt.body);
+            node_id condition = node->value.for_stmt.condition;
+
+            environment_t *local_env = create_env(ctx->arena, env);
+
+            if (node->value.for_stmt.initializer)
+                interpret(ctx, node->value.for_stmt.initializer, global_env, local_env);
+
+            while ((condition ? is_truthy(interpret(ctx, condition, global_env, local_env).value) :
+                                true)) {
+                eval_result_t result =
+                    interpret(ctx, node->value.for_stmt.body, global_env, local_env);
+
+                if (result.type == EVAL_BREAK)
+                    break;
+
+                if (result.type == EVAL_ERROR || result.type == EVAL_RETURN)
+                    return result;
+
+                if (node->value.for_stmt.increment)
+                    interpret(ctx, node->value.for_stmt.increment, global_env, local_env);
+            }
+
+            return create_eval_ok();
+        };
+
+        case NODE_BREAK: {
+            return create_eval_break();
         }
 
-        return create_eval_result(EVAL_OK, data);
-    }
-
-    case NODE_IDENTIFIER: {
-        var_pool_entry_t *entry = get_var_in_scope(global_env, env, node->value.identifier.depth,
-                                                   node->value.identifier.name);
-        source_loc_t loc = node->value.identifier.loc;
-
-        if (!entry) {
-            report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
-                           loc.line_start, "Variable is not defined");
-            return create_eval_error();
+        case NODE_RETURN: {
+            node_id value = node->value.return_value;
+            return create_eval_result(
+                EVAL_RETURN, value != NULL_NODE ? interpret(ctx, value, global_env, env).value :
+                                                  create_value(VALUE_NIL, (value_as_t){}));
         }
 
-        if (entry->value.type == VALUE_UNINITIALIZED) {
-            report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
-                           loc.line_start, "Uninitialized variable");
-            return create_eval_error();
+        case NODE_CALL: {
+            eval_result_t callee_result = interpret(ctx, node->value.call.callee, global_env, env);
+            source_loc_t loc = node->value.call.loc;
+
+            if (callee_result.value.type != VALUE_FUN && callee_result.value.type != VALUE_CLASS) {
+                report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
+                               loc.line_start, "Use of undeclared function/class");
+
+                return create_eval_error();
+            }
+
+            return callee_result.value.type == VALUE_FUN ?
+                       interpret_fun_call(ctx, callee_result, node, global_env, env) :
+                       interpret_class_instantiation(ctx, callee_result, node, global_env, env);
         }
 
-        return create_eval_result(EVAL_OK, entry->value);
-    }
+        case NODE_GET: {
+            eval_result_t instance_result =
+                interpret(ctx, node->value.get.instance, global_env, env);
+            source_loc_t loc = node->value.call.loc;
 
-    case NODE_BINARY:
-        return interpret_binary(ctx, id, global_env, env);
+            if (instance_result.value.type != VALUE_CLASS_INSTANCE) {
+                report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
+                               loc.line_start, "Only instances have properties");
 
-    case NODE_UNARY:
-        return interpret_unary(ctx, id, global_env, env);
+                return create_eval_error();
+            }
 
-    case NODE_TERNARY:
-        return interpret_ternary(ctx, id, global_env, env);
+            const char *field_name = get_node(ctx, node->value.get.property)->value.identifier.name;
+            value_t prop = get_instance_property(field_name, instance_result.value);
 
-    case NODE_PRINT: {
-        printf("%s\n",
-               stringify_value(ctx->arena,
-                               interpret(ctx, node->value.print_stmt, global_env, env).value));
+            if (prop.type == 0) {
+                report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
+                               loc.line_start, "Undefined property");
+                return create_eval_error();
+            }
 
-        return create_eval_ok();
-    }
+            return create_eval_result(EVAL_OK, prop);
+        }
 
-    case NODE_VAR: {
-        const char *identifier =
-            get_node(ctx, node->value.var_decl.identifier)->value.identifier.name;
-        value_t uninitialized_value = create_uninitialized_value();
+        case NODE_SET: {
+            eval_result_t instance_result =
+                interpret(ctx, node->value.set.instance, global_env, env);
+            source_loc_t loc = node->value.call.loc;
 
-        if (get_node(ctx, node->value.var_decl.expression)->type == NODE_UNINITIALIZED) {
-            if (set_var_entry(ctx->arena, &env->pool, identifier, uninitialized_value) != 0)
+            if (instance_result.value.type != VALUE_CLASS_INSTANCE) {
+                report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
+                               loc.line_start, "Only instances have properties");
+
+                return create_eval_error();
+            }
+
+            ast_node_t *ident_node = get_node(ctx, node->value.set.property);
+
+            eval_result_t result = interpret(ctx, node->value.set.expression, global_env, env);
+
+            var_pool_t *fields_pool = instance_result.value.as.class_instance.fields;
+            var_pool_t *methods_pool = instance_result.value.as.class_instance.methods;
+            if (set_var_entry(ctx->arena,
+                              result.value.type == VALUE_FUN ? methods_pool : fields_pool,
+                              ident_node->value.identifier.name, result.value) != 0)
                 return create_eval_error();
 
-            return create_eval_ok();
+            return result;
         }
 
-        if (set_var_entry(ctx->arena, &env->pool, identifier,
-                          interpret(ctx, node->value.var_decl.expression, global_env, env).value) !=
-            0)
-            return create_eval_error();
+        case NODE_THIS: {
+            var_pool_entry_t *entry = get_var_in_scope(global_env, env, node->value.this_context,
+                                                       intern(ctx->arena, "this"));
 
-        return create_eval_ok();
-    }
+            if (!entry)
+                return create_eval_error();
 
-    case NODE_ASSIGN: {
-        ast_node_t *ident_node = get_node(ctx, node->value.assign.identifier);
-        source_loc_t loc = ident_node->value.identifier.loc;
-        var_pool_entry_t *var_entry = get_var_in_scope(
-            global_env, env, ident_node->value.identifier.depth, ident_node->value.identifier.name);
+            return create_eval_result(EVAL_OK, entry->value);
+        };
 
-        if (!var_entry) {
-            report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
-                           loc.line_start, "Use of undeclared identifier");
-            return create_eval_error();
+        default: {
+            __builtin_unreachable();
         }
-
-        eval_result_t result = interpret(ctx, node->value.assign.expression, global_env, env);
-        if (set_var_in_scope(ctx->arena, global_env, env, ident_node->value.identifier.depth,
-                             ident_node->value.identifier.name, result.value) != 0)
-            return create_eval_error();
-
-        return result;
-    }
-
-    case NODE_BLOCK: {
-        environment_t *local_env = create_env(ctx->arena, env);
-
-        return run_declarations(ctx, node->value.block_declarations, global_env, local_env);
-    };
-
-    case NODE_IF: {
-        assert(node->value.if_stmt.condition);
-
-        eval_result_t condition = interpret(ctx, node->value.if_stmt.condition, global_env, env);
-
-        if (is_truthy(condition.value)) {
-            assert(node->value.if_stmt.then_branch);
-
-            eval_result_t result = interpret(ctx, node->value.if_stmt.then_branch, global_env, env);
-            if (result.type != EVAL_OK)
-                return result;
-        } else if (node->value.if_stmt.else_branch) {
-            eval_result_t result = interpret(ctx, node->value.if_stmt.else_branch, global_env, env);
-            if (result.type != EVAL_OK)
-                return result;
-        }
-
-        return create_eval_ok();
-    };
-
-    case NODE_WHILE: {
-        assert(node->value.while_stmt.condition);
-        assert(node->value.while_stmt.body);
-
-        while (is_truthy(interpret(ctx, node->value.while_stmt.condition, global_env, env).value)) {
-            eval_result_t result = interpret(ctx, node->value.while_stmt.body, global_env, env);
-
-            if (result.type == EVAL_BREAK)
-                break;
-
-            if (result.type == EVAL_ERROR || result.type == EVAL_RETURN)
-                return result;
-        }
-
-        return create_eval_ok();
-    };
-
-    case NODE_FOR: {
-        assert(node->value.for_stmt.body);
-        node_id condition = node->value.for_stmt.condition;
-
-        environment_t *local_env = create_env(ctx->arena, env);
-
-        if (node->value.for_stmt.initializer)
-            interpret(ctx, node->value.for_stmt.initializer, global_env, local_env);
-
-        while ((condition ? is_truthy(interpret(ctx, condition, global_env, local_env).value) :
-                            true)) {
-            eval_result_t result = interpret(ctx, node->value.for_stmt.body, global_env, local_env);
-
-            if (result.type == EVAL_BREAK)
-                break;
-
-            if (result.type == EVAL_ERROR || result.type == EVAL_RETURN)
-                return result;
-
-            if (node->value.for_stmt.increment)
-                interpret(ctx, node->value.for_stmt.increment, global_env, local_env);
-        }
-
-        return create_eval_ok();
-    };
-
-    case NODE_BREAK: {
-        return create_eval_break();
-    }
-
-    case NODE_RETURN: {
-        node_id value = node->value.return_value;
-        return create_eval_result(EVAL_RETURN, value ?
-                                                   interpret(ctx, value, global_env, env).value :
-                                                   create_value(VALUE_NIL, (value_as_t){}));
-    }
-
-    case NODE_CALL: {
-        eval_result_t callee_result = interpret(ctx, node->value.call.callee, global_env, env);
-        source_loc_t loc = node->value.call.loc;
-
-        if (callee_result.value.type != VALUE_FUN && callee_result.value.type != VALUE_CLASS) {
-            report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
-                           loc.line_start, "Use of undeclared function/class");
-
-            return create_eval_error();
-        }
-
-        return callee_result.value.type == VALUE_FUN ?
-                   interpret_fun_call(ctx, callee_result, node, global_env, env) :
-                   interpret_class_instantiation(ctx, callee_result, node, global_env, env);
-    }
-
-    case NODE_GET: {
-        eval_result_t instance_result = interpret(ctx, node->value.get.instance, global_env, env);
-        source_loc_t loc = node->value.call.loc;
-
-        if (instance_result.value.type != VALUE_CLASS_INSTANCE) {
-            report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
-                           loc.line_start, "Only instances have properties");
-
-            return create_eval_error();
-        }
-
-        return interpret(ctx, node->value.get.property, global_env,
-                         instance_result.value.as.class_instance.env);
-    }
-
-    case NODE_SET: {
-        eval_result_t instance_result = interpret(ctx, node->value.set.instance, global_env, env);
-        source_loc_t loc = node->value.call.loc;
-
-        if (instance_result.value.type != VALUE_CLASS_INSTANCE) {
-            report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
-                           loc.line_start, "Only instances have properties");
-
-            return create_eval_error();
-        }
-
-        environment_t *instance_env = instance_result.value.as.class_instance.env;
-        ast_node_t *ident_node = get_node(ctx, node->value.set.property);
-
-        var_pool_entry_t *var_entry = get_var_in_scope(global_env, instance_env,
-                                                       ident_node->value.identifier.depth,
-                                                       ident_node->value.identifier.name);
-
-        if (!var_entry) {
-            report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
-                           loc.line_start, "Use of undeclared instance property");
-            return create_eval_error();
-        }
-
-        eval_result_t result = interpret(ctx, node->value.set.expression, global_env, instance_env);
-
-        if (set_var_in_scope(ctx->arena, global_env, instance_env,
-                             ident_node->value.identifier.depth, ident_node->value.identifier.name,
-                             result.value) != 0)
-            return create_eval_error();
-
-        return result;
-    }
-
-    default: {
-        __builtin_unreachable();
-    }
     }
 }
 
@@ -3206,6 +3399,19 @@ value_t create_value(value_type_t type, value_as_t as)
 value_t create_uninitialized_value(void)
 {
     return (value_t){ .type = VALUE_UNINITIALIZED, .as = { 0 } };
+}
+
+value_t get_instance_property(const char *field_name, value_t class_instance)
+{
+    var_pool_entry_t *field = get_var_entry(class_instance.as.class_instance.fields, field_name);
+    if (field)
+        return field->value;
+
+    var_pool_entry_t *method = get_var_entry(class_instance.as.class_instance.methods, field_name);
+    if (method)
+        return method->value;
+
+    return (value_t){};
 }
 
 bool check_number_operand(context_t *ctx, token_t tok, value_t child)

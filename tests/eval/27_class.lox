@@ -46,3 +46,18 @@ class math {
 var inst = math();
 
 print inst.add(inst.div(inst.mul(35)(2))(2))(34);
+
+// constructor
+class rect {
+    init(width, height) {
+        this.width = width;
+        this.height = height;
+    }
+
+    get_area() {
+        return this.width * this.height;
+    }
+}
+
+var rect_inst = rect(160, 80);
+print rect_inst.get_area();
