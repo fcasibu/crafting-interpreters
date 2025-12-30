@@ -44,7 +44,7 @@ typedef enum {
     NODE_PROGRAM, NODE_IDENTIFIER, NODE_TERNARY, NODE_PRINT, NODE_VAR,
     NODE_ASSIGN, NODE_BLOCK, NODE_IF, NODE_WHILE, NODE_FOR, NODE_BREAK,
     NODE_FUN, NODE_CALL, NODE_RETURN, NODE_CLASS, NODE_GET, NODE_SET,
-    NODE_THIS, NODE_UNINITIALIZED
+    NODE_THIS, NODE_SUPER, NODE_UNINITIALIZED
     // clang-format on
 } node_type_t;
 
@@ -71,9 +71,11 @@ typedef union {
         const char *name;
         struct ast_nodes *methods;
         struct environment *env;
+        struct value *superclass;
     } class_def;
     struct {
         struct value *klass;
+        struct value *superclass;
         const char *name;
         struct environment *env;
         struct var_pool *fields;
@@ -186,6 +188,7 @@ typedef union {
 
     struct {
         struct ast_nodes *methods;
+        node_id superclass;
         node_id name;
     } class_decl;
 
@@ -215,7 +218,13 @@ typedef union {
         node_id expression;
     } set;
 
-    node_id this_context;
+    int this_context;
+
+    struct {
+        node_id property;
+        int super_context;
+        source_loc_t loc;
+    } super;
 
     struct ast_nodes *prog_declarations;
 } node_value_t;
@@ -249,7 +258,7 @@ typedef struct {
 
     usize loop_depth;
     usize function_depth;
-    usize this_depth;
+    usize class_depth;
 } parser_t;
 
 static const struct {
@@ -290,7 +299,6 @@ typedef struct {
 typedef struct var_pool_entry {
     const char *str;
     value_t value;
-    bool used;
     struct var_pool_entry *next;
 } var_pool_entry_t;
 
@@ -521,7 +529,7 @@ void run(context_t *ctx)
     parser.tokens_size = lexer.tokens.size;
     parser.loop_depth = 0;
     parser.function_depth = 0;
-    parser.this_depth = 0;
+    parser.class_depth = 0;
     parser_parse(ctx, &parser);
 
     if (had_error)
@@ -660,9 +668,9 @@ node_id parser_parse_declaration(context_t *ctx, parser_t *parser)
         }
 
         case CLASS: {
-            parser->this_depth += 1;
+            parser->class_depth += 1;
             node_id node = parser_parse_class_declaration(ctx, parser);
-            parser->this_depth -= 1;
+            parser->class_depth -= 1;
 
             if (node == NULL_NODE)
                 parser_synchronize(parser);
@@ -731,6 +739,15 @@ node_id parser_parse_class_declaration(context_t *ctx, parser_t *parser)
     if (name == NULL_NODE)
         return NULL_NODE;
 
+    node_id superclass_name = NULL_NODE;
+
+    if (parser_match(parser, LESS)) {
+        parser_advance(parser);
+        superclass_name = parser_parse_identifier(ctx, parser);
+        if (name == NULL_NODE)
+            return NULL_NODE;
+    }
+
     if (parser_advance(parser).type != LEFT_BRACE) {
         report_unexpected_token(ctx, parser_previous(parser), "{");
         return NULL_NODE;
@@ -759,6 +776,7 @@ node_id parser_parse_class_declaration(context_t *ctx, parser_t *parser)
         .class_decl = { 
             .methods = methods,
             .name = name,
+            .superclass = superclass_name,
         },
     };
     return parser_create_node(ctx, NODE_CLASS, value, tok.cursor, parser_previous(parser).cursor);
@@ -1546,10 +1564,26 @@ node_id parser_parse_primary(context_t *ctx, parser_t *parser)
                                   tok.cursor + tok.lexeme_len);
     }
 
+    if (parser_match(parser, SUPER)) {
+        token_t tok = parser_advance(parser);
+
+        if (parser->class_depth == 0)
+            report_error_at_token(ctx, parser_previous(parser),
+                                  "Syntax Error: Invalid usage of 'super'");
+
+        if (parser_advance(parser).type != DOT)
+            report_unexpected_token(ctx, parser_previous(parser), ".");
+
+        node_id property = parser_parse_identifier(ctx, parser);
+        node_value_t value = (node_value_t){ .super.property = property };
+        return parser_create_node(ctx, NODE_SUPER, value, tok.cursor,
+                                  tok.cursor + get_node(ctx, property)->end);
+    }
+
     if (parser_match(parser, THIS)) {
         token_t tok = parser_advance(parser);
 
-        if (parser->this_depth == 0)
+        if (parser->class_depth == 0)
             report_error_at_token(ctx, parser_previous(parser),
                                   "Syntax Error: Invalid usage of 'this'");
 
@@ -2276,6 +2310,14 @@ void resolve_variable(context_t *ctx, scopes_t *scopes, node_id id)
                 set_var_entry(ctx->arena, &scopes->items[scopes->size - 1], name, (value_t){});
             }
 
+            if (node->value.class_decl.superclass != NULL_NODE) {
+                resolve_variable(ctx, scopes, node->value.class_decl.superclass);
+
+                arena_da_append(ctx->arena, scopes, (var_pool_t){ .head = NULL });
+                set_var_entry(ctx->arena, &scopes->items[scopes->size - 1],
+                              intern(ctx->arena, "super"), (value_t){});
+            }
+
             ast_nodes_t *methods = node->value.class_decl.methods;
             for (usize i = 0; i < methods->size; ++i) {
                 ast_node_t *fun = get_node(ctx, methods->items[i]);
@@ -2311,6 +2353,10 @@ void resolve_variable(context_t *ctx, scopes_t *scopes, node_id id)
                 if (is_init)
                     scopes->size += 1;
 
+                scopes->size -= 1;
+            }
+
+            if (node->value.class_decl.superclass != NULL_NODE) {
                 scopes->size -= 1;
             }
         } break;
@@ -2380,7 +2426,6 @@ void resolve_variable(context_t *ctx, scopes_t *scopes, node_id id)
                         int depth = i == 0 ? -1 : (int)(scopes->size - 1) - i;
 
                         node->value.identifier.depth = depth;
-                        current->used = true;
                         found = true;
                         break;
                     }
@@ -2416,21 +2461,39 @@ void resolve_variable(context_t *ctx, scopes_t *scopes, node_id id)
 
         case NODE_THIS: {
             bool found = false;
-            const char *this = intern(ctx->arena, "this");
+            const char *this_str = intern(ctx->arena, "this");
 
             for (int i = (int)scopes->size - 1; i >= 0; --i) {
                 var_pool_entry_t *current = scopes->items[i].head;
 
                 while (current) {
-                    if (current->str == this) {
-                        node->value.this_context = scopes->size - i;
-                        current->used = true;
+                    if (current->str == this_str) {
+                        node->value.this_context = ((int)scopes->size) - i;
                         found = true;
                         break;
                     }
                     current = current->next;
                 }
 
+                if (found)
+                    break;
+            }
+        } break;
+
+        case NODE_SUPER: {
+            const char *super_str = intern(ctx->arena, "super");
+            bool found = false;
+
+            for (int i = (int)scopes->size - 1; i >= 0; --i) {
+                var_pool_entry_t *current = scopes->items[i].head;
+                while (current) {
+                    if (current->str == super_str) {
+                        node->value.super.super_context = (int)(scopes->size - 1) - i;
+                        found = true;
+                        break;
+                    }
+                    current = current->next;
+                }
                 if (found)
                     break;
             }
@@ -2983,17 +3046,34 @@ eval_result_t interpret_class_instantiation(context_t *ctx, eval_result_t callee
     var_pool_t *fields_pool = arena_alloc(ctx->arena, sizeof(*fields_pool));
     var_pool_t *methods_pool = arena_alloc(ctx->arena, sizeof(*methods_pool));
 
-    value_t data =
-        create_value(VALUE_CLASS_INSTANCE, (value_as_t){ .class_instance = {
-                                                             .klass = &callee_result.value,
-                                                             .env = local_env,
-                                                             .fields = fields_pool,
-                                                             .methods = methods_pool,
-                                                         } });
+    value_t data = create_value(VALUE_CLASS_INSTANCE,
+                                (value_as_t){ .class_instance = {
+                                                  .klass = arena_alloc(ctx->arena, sizeof(value_t)),
+                                                  .superclass = NULL,
+                                                  .env = local_env,
+                                                  .fields = fields_pool,
+                                                  .methods = methods_pool,
+                                              } });
+
+    *data.as.class_instance.klass = callee_result.value;
+
+    if (callee_result.value.as.class_def.superclass && data.as.class_instance.klass) {
+        data.as.class_instance.superclass = arena_alloc(ctx->arena, sizeof(value_t));
+
+        value_t *superclass_value = data.as.class_instance.klass->as.class_def.superclass;
+
+        if (superclass_value) {
+            eval_result_t superclass_result = interpret_class_instantiation(
+                ctx, create_eval_result(EVAL_OK, *superclass_value), node, global_env, env);
+
+            if (superclass_result.type != EVAL_OK)
+                return create_eval_error();
+
+            *data.as.class_instance.superclass = superclass_result.value;
+        }
+    }
 
     data.as.class_instance.name = stringify_value(ctx->arena, data);
-    if (set_var_entry(ctx->arena, &local_env->pool, intern(ctx->arena, "this"), data) != 0)
-        return create_eval_error();
 
     ast_nodes_t *methods = callee_result.value.as.class_def.methods;
 
@@ -3010,7 +3090,18 @@ eval_result_t interpret_class_instantiation(context_t *ctx, eval_result_t callee
         if (set_var_entry(ctx->arena, &res.value.as.fun_def.closure->pool,
                           intern(ctx->arena, "this"), data) != 0)
             return create_eval_error();
+
+        if (data.as.class_instance.superclass) {
+            if (set_var_entry(ctx->arena, &res.value.as.fun_def.closure->pool,
+                              intern(ctx->arena, "super"),
+                              *data.as.class_instance.superclass) != 0) {
+                return create_eval_error();
+            }
+        }
     }
+
+    if (set_var_entry(ctx->arena, &local_env->pool, intern(ctx->arena, "this"), data) != 0)
+        return create_eval_error();
 
     value_t prop = get_instance_property(intern(ctx->arena, "init"), data);
 
@@ -3031,6 +3122,7 @@ eval_result_t interpret_class_instantiation(context_t *ctx, eval_result_t callee
 
     if (prop.type != 0) {
         ast_nodes_t *nodes = get_node(ctx, prop.as.fun_def.body)->value.block_declarations;
+
         for (usize i = 0; i < nodes->size; ++i) {
             ast_node_t *node = get_node(ctx, nodes->items[i]);
             eval_result_t res = interpret(ctx, nodes->items[i], global_env, local_env);
@@ -3104,21 +3196,45 @@ eval_result_t interpret(context_t *ctx, node_id id, environment_t *global_env, e
         }
 
         case NODE_CLASS: {
+            node_id superclass_node_id = node->value.class_decl.superclass;
+            ast_node_t *superclass_node = get_node(ctx, superclass_node_id);
+
             value_t data = create_value(VALUE_CLASS,
                                         (value_as_t){ .class_def = {
+                                                          .superclass = NULL,
                                                           .methods = node->value.class_decl.methods,
                                                           .env = create_env(ctx->arena, env),
                                                       } });
+
+            if (superclass_node) {
+                eval_result_t superclass_result =
+                    interpret(ctx, node->value.class_decl.superclass, global_env, env);
+                source_loc_t loc = superclass_node->value.identifier.loc;
+
+                if (superclass_result.value.type != VALUE_CLASS) {
+                    report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
+                                   loc.line_start, "Must inherit from a valid superclass");
+                    return create_eval_error();
+                }
+
+                data.as.class_def.superclass = arena_alloc(ctx->arena, sizeof(value_t));
+                *data.as.class_def.superclass = superclass_result.value;
+            }
 
             if (node->value.class_decl.name) {
                 const char *name =
                     get_node(ctx, node->value.class_decl.name)->value.identifier.name;
                 data.as.class_def.name = name;
 
+                if (superclass_node && strcmp(superclass_node->value.identifier.name, name) == 0) {
+                    source_loc_t loc = superclass_node->value.identifier.loc;
+                    report_runtime(loc.line - 1, loc.col - 1, ctx->source_filename, ctx->source,
+                                   loc.line_start, "Cannot inherit from itself");
+                    return create_eval_error();
+                }
+
                 if (set_var_entry(ctx->arena, &env->pool, name, data) != 0)
                     return create_eval_error();
-
-                return create_eval_ok();
             }
 
             return create_eval_result(EVAL_OK, data);
@@ -3365,6 +3481,22 @@ eval_result_t interpret(context_t *ctx, node_id id, environment_t *global_env, e
             return create_eval_result(EVAL_OK, entry->value);
         };
 
+        case NODE_SUPER: {
+            ast_node_t *ident_node = get_node(ctx, node->value.super.property);
+
+            if (!ident_node)
+                return create_eval_error();
+
+            var_pool_entry_t *entry = get_var_in_scope(
+                global_env, env, node->value.super.super_context, intern(ctx->arena, "super"));
+
+            if (!entry || entry->value.type != VALUE_CLASS_INSTANCE)
+                return create_eval_error();
+
+            return interpret(ctx, node->value.super.property, global_env,
+                             entry->value.as.class_instance.env);
+        };
+
         default: {
             __builtin_unreachable();
         }
@@ -3403,13 +3535,19 @@ value_t create_uninitialized_value(void)
 
 value_t get_instance_property(const char *field_name, value_t class_instance)
 {
-    var_pool_entry_t *field = get_var_entry(class_instance.as.class_instance.fields, field_name);
-    if (field)
-        return field->value;
+    value_t *current = &class_instance;
 
-    var_pool_entry_t *method = get_var_entry(class_instance.as.class_instance.methods, field_name);
-    if (method)
-        return method->value;
+    while (current != NULL && current->type == VALUE_CLASS_INSTANCE) {
+        var_pool_entry_t *field = get_var_entry(current->as.class_instance.fields, field_name);
+        if (field)
+            return field->value;
+
+        var_pool_entry_t *method = get_var_entry(current->as.class_instance.methods, field_name);
+        if (method)
+            return method->value;
+
+        current = current->as.class_instance.superclass;
+    }
 
     return (value_t){};
 }

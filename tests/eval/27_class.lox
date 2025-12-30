@@ -61,3 +61,61 @@ class rect {
 
 var rect_inst = rect(160, 80);
 print rect_inst.get_area();
+
+// inheritance
+class Doughnut {
+  cook() {
+    print "Fry until golden brown.";
+  }
+}
+
+class BostonCream < Doughnut {
+  cook() {
+    super.cook();
+    print "Pipe with custard and glaze with chocolate.";
+  }
+}
+
+BostonCream().cook();
+
+class A {
+  method() {
+    print "A method";
+  }
+}
+
+class B < A {
+  method() {
+    print "B method";
+    super.method();
+  }
+}
+
+class C < B {
+  method() {
+    print "C method";
+    super.method();
+  }
+}
+
+var c = C();
+c.method();
+
+class A {
+  get_name() {
+    return "Class A";
+  }
+
+  test() {
+    print this.get_name();
+  }
+}
+
+class B < A {
+  get_name() {
+    return "Class B";
+  }
+}
+
+var b = B();
+b.test();
